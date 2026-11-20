@@ -44,8 +44,9 @@ M5Stack **StickS3** (`ESP32-S3-PICO-1-N8R8`) 전용 경량 펌웨어입니다.
 
 ---
 
-### 3. SETTINGS (NVS 자동 저장)
-- EPI 간격 (`3m` / `4m` / `5m`), 마우스 감도 (`1` ~ `5`), X/Y 반전, X/Y 축 교환, 내추럴 스크롤, 볼륨/음소거, 화면 180도 회전.
+- **SETTINGS (NVS 자동 저장)**
+  - EPI 간격 (`3m` / `4m` / `5m`), 마우스 감도 (`1` ~ `5`), X/Y 반전, X/Y 축 교환, 내추럴 스크롤, 볼륨/음소거, 화면 180도 회전(`Flip Scr` — 180° 회전 시 자이로 상하 피치 방향도 자동 보정), **장치 재부팅 (`Reboot Device`)**.
+- 홈 화면이나 에어마우스 사용 중에도 EMS 타이머는 백그라운드에서 계속 동작하며, 만료 시 상단 상태바 알림(`EPI DUE!`)과 논블로킹 경고음이 울립니다.
 
 ---
 
@@ -59,7 +60,7 @@ M5Stack **StickS3** (`ESP32-S3-PICO-1-N8R8`) 전용 경량 펌웨어입니다.
      ```bash
      python -m esptool --chip esp32s3 --port COM번호 write-flash 0x0 sticks3-ems-airmouse-full.bin
      ```
-   - 참고: `AIR MOUSE USB` 모드는 USB-OTG 포트를 HID 마우스로 사용하므로, 재플래시가 필요할 때는 StickS3를 다운로드(부트로더) 모드로 진입한 뒤 실행하세요.
+   - 참고: `AIR MOUSE USB` 모드를 한 번 실행하면 USB-OTG 포트가 HID 마우스로 전환되므로, USB 시리얼 콘솔 복구가 필요할 때는 `SETTINGS → Reboot Device`로 재부팅하세요(펌웨어 재플래시용 다운로드 모드는 언제든 진입 가능).
 
 ## 호스트 단위 테스트
 

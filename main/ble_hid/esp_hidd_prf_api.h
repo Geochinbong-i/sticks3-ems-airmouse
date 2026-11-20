@@ -164,6 +164,8 @@ void esp_hidd_send_mouse_value(uint16_t conn_id, uint8_t mouse_button, int8_t mi
 
 void esp_hidd_send_mouse_wheel(uint16_t conn_id, uint8_t mouse_button, int8_t mickeys_x, int8_t mickeys_y, int8_t wheel);
 
+void esp_hidd_set_battery_level(uint16_t conn_id, bool notify, uint8_t level);
+
 #ifdef __cplusplus
 }
 #endif

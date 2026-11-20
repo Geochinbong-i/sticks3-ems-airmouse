@@ -87,6 +87,10 @@ void airmouse_usb_stop() {
     s_usb_active = false;
 }
 
+bool airmouse_usb_was_inited() {
+    return s_usb_inited;
+}
+
 bool airmouse_usb_is_connected() {
     return s_usb_inited && s_usb_active && tud_mounted();
 }

@@ -5,6 +5,7 @@
 #include "app_settings.h"
 #include "input_util.h"
 #include "sound_fx.h"
+#include "timer/ems_timer_ui.h"
 
 #include "M5Unified.h"
 #include "esp_timer.h"
@@ -22,19 +23,28 @@ static void draw_airmouse_frame(M5Canvas &canvas,
                                 bool scroll_mode,
                                 uint8_t buttons,
                                 float preview_x,
-                                float preview_y) {
+                                float preview_y,
+                                int64_t now_ms) {
     int w = canvas.width();
     int h = canvas.height();
+    bool ems_alarm = ems_timer_has_active_alarm();
+    bool flash_on = ((now_ms / 400) % 2) == 0;
 
     canvas.fillScreen(0x0B0F17);
 
     // Header bar
-    uint32_t hdr_col = (transport == AirMouseTransport::Ble) ? 0x123866 : 0x11493A;
+    uint32_t hdr_col = (ems_alarm && flash_on)
+                         ? 0xB71C1C
+                         : ((transport == AirMouseTransport::Ble) ? 0x123866 : 0x11493A);
     canvas.fillRect(0, 0, w, 24, hdr_col);
     canvas.setTextSize(1);
     canvas.setTextColor(0xFFFFFF, hdr_col);
     canvas.setCursor(6, 8);
-    canvas.print(transport == AirMouseTransport::Ble ? "AIR MOUSE BLE" : "AIR MOUSE USB");
+    if (ems_alarm && flash_on) {
+        canvas.print("EMS ALARM DUE!");
+    } else {
+        canvas.print(transport == AirMouseTransport::Ble ? "AIR MOUSE BLE" : "AIR MOUSE USB");
+    }
 
     int batt = M5.Power.getBatteryLevel();
     if (batt >= 0) {
@@ -126,6 +136,31 @@ static void draw_airmouse_frame(M5Canvas &canvas,
     canvas.pushSprite(0, 0);
 }
 
+static void show_usb_exit_notice(M5Canvas &canvas) {
+    canvas.fillScreen(0x0B0F17);
+    canvas.drawRoundRect(8, 56, canvas.width() - 16, 110, 6, 0x26A69A);
+    canvas.setTextSize(1);
+    canvas.setTextColor(0x80CBC4, 0x0B0F17);
+    canvas.setCursor(18, 72);
+    canvas.print("USB HID PAUSED");
+    canvas.setTextColor(0xCFD8DC, 0x0B0F17);
+    canvas.setCursor(16, 94);
+    canvas.print("USB-OTG active.");
+    canvas.setCursor(16, 110);
+    canvas.print("Reboot in Settings");
+    canvas.setCursor(16, 126);
+    canvas.print("for USB Serial.");
+    canvas.pushSprite(0, 0);
+
+    int64_t until_ms = input_now_ms() + 1300;
+    while (input_now_ms() < until_ms) {
+        input_update();
+        if (input_a_pressed() || input_b_pressed()) break;
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    input_wait_all_release();
+}
+
 void airmouse_ui_run(AirMouseTransport transport) {
     if (!M5.Imu.isEnabled()) {
         M5.Display.fillScreen(0x000000);
@@ -176,14 +211,11 @@ void airmouse_ui_run(AirMouseTransport transport) {
 
     input_wait_all_release();
 
-    bool paused = false;
-    bool b_was_down = false;
-    int64_t b_down_ms = 0;
-    bool b_scroll_active = false;
-    bool ab_chord_active = false;
-    int64_t ab_chord_start_ms = 0;
+    AirMouseButtonGuard btn_guard;
     uint8_t prev_buttons = 0;
-    int64_t rmb_pulse_until_ms = 0;
+    bool was_connected = false;
+    int last_ble_batt = -1;
+    int64_t last_batt_ms = 0;
 
     float preview_x = 0.5f;
     float preview_y = 0.5f;
@@ -193,59 +225,25 @@ void airmouse_ui_run(AirMouseTransport transport) {
     while (true) {
         input_update();
         int64_t now_ms = input_now_ms();
-        bool a_down = input_a_down();
-        bool b_down = input_b_down();
+        AirMouseBtnState bst = btn_guard.step(now_ms, input_a_down(), input_b_down());
 
-        // Handle A+B chord: tap = toggle Pause/Clutch, hold >= 600ms = Exit
-        if (a_down && b_down) {
-            if (!ab_chord_active) {
-                ab_chord_active = true;
-                ab_chord_start_ms = now_ms;
-                b_scroll_active = false;
+        if (bst.exit_requested) {
+            if (transport == AirMouseTransport::Ble) {
+                airmouse_ble_stop();
+            } else {
+                airmouse_usb_stop();
             }
-            if ((now_ms - ab_chord_start_ms) >= 600) {
-                if (transport == AirMouseTransport::Ble) airmouse_ble_stop();
-                else airmouse_usb_stop();
-                sound_fx_click();
-                input_wait_ab_release();
-                canvas.deleteSprite();
-                return;
+            sound_fx_click();
+            input_wait_ab_release();
+            if (transport == AirMouseTransport::Usb && airmouse_usb_was_inited()) {
+                show_usb_exit_notice(canvas);
             }
-        } else {
-            if (ab_chord_active) {
-                // Released before 600ms => toggle Pause
-                paused = !paused;
-                sound_fx_click();
-                ab_chord_active = false;
-                b_was_down = b_down;
-                vTaskDelay(pdMS_TO_TICKS(20));
-                continue;
-            }
+            canvas.deleteSprite();
+            return;
         }
 
-        // B button: tap (< 300ms) = RMB click, hold (>= 300ms) = Scroll mode
-        if (!ab_chord_active) {
-            if (b_down && !b_was_down) {
-                b_down_ms = now_ms;
-                b_scroll_active = false;
-            } else if (b_down && b_was_down) {
-                if ((now_ms - b_down_ms) >= 300) {
-                    b_scroll_active = true;
-                }
-            } else if (!b_down && b_was_down) {
-                if (!b_scroll_active && !paused) {
-                    rmb_pulse_until_ms = now_ms + 45;
-                    sound_fx_click();
-                }
-                b_scroll_active = false;
-            }
-            b_was_down = b_down;
-        }
-
-        uint8_t buttons = 0;
-        if (!ab_chord_active && !paused) {
-            if (a_down) buttons |= 0x01; // LMB
-            if (now_ms < rmb_pulse_until_ms) buttons |= 0x02; // RMB tap pulse
+        if (bst.clicked_cue) {
+            sound_fx_click();
         }
 
         int64_t now_us = esp_timer_get_time();
@@ -261,11 +259,11 @@ void airmouse_ui_run(AirMouseTransport transport) {
         cfg.invert_y = g_settings.air_invert_y;
         cfg.swap_xy = g_settings.air_swap_xy;
         cfg.natural_scroll = g_settings.air_natural_scroll;
+        cfg.flip_180 = (g_settings.rotation == 2);
 
-        AirMouseDelta d = filter.update(gx, gy, gz, dt, cfg, b_scroll_active, paused);
+        AirMouseDelta d = filter.update(gx, gy, gz, dt, cfg, bst.scroll_mode, bst.paused);
 
-        // Update on-screen preview crosshair
-        if (!paused && !b_scroll_active) {
+        if (!bst.paused && !bst.scroll_mode) {
             preview_x += (float)d.dx / 260.0f;
             preview_y += (float)d.dy / 260.0f;
             if (preview_x < 0.05f) preview_x = 0.05f;
@@ -279,13 +277,25 @@ void airmouse_ui_run(AirMouseTransport transport) {
                              : airmouse_usb_is_connected();
         bool suspended = (transport == AirMouseTransport::Usb) && airmouse_usb_is_suspended();
 
-        if (connected && (d.dx != 0 || d.dy != 0 || d.wheel != 0 || buttons != prev_buttons)) {
-            if (transport == AirMouseTransport::Ble) {
-                airmouse_ble_send(buttons, d.dx, d.dy, d.wheel);
-            } else {
-                airmouse_usb_send(buttons, d.dx, d.dy, d.wheel);
+        if (transport == AirMouseTransport::Ble && connected) {
+            if (!was_connected || (now_ms - last_batt_ms) >= 10000) {
+                last_batt_ms = now_ms;
+                int batt = M5.Power.getBatteryLevel();
+                if (batt >= 0 && (!was_connected || batt != last_ble_batt)) {
+                    last_ble_batt = batt;
+                    airmouse_ble_update_battery(batt);
+                }
             }
-            prev_buttons = buttons;
+        }
+        was_connected = connected;
+
+        if (connected && (d.dx != 0 || d.dy != 0 || d.wheel != 0 || bst.buttons != prev_buttons)) {
+            if (transport == AirMouseTransport::Ble) {
+                airmouse_ble_send(bst.buttons, d.dx, d.dy, d.wheel);
+            } else {
+                airmouse_usb_send(bst.buttons, d.dx, d.dy, d.wheel);
+            }
+            prev_buttons = bst.buttons;
         } else if (!connected) {
             prev_buttons = 0;
         }
@@ -293,7 +303,8 @@ void airmouse_ui_run(AirMouseTransport transport) {
         if ((now_ms - last_draw_ms) >= 40) {
             last_draw_ms = now_ms;
             draw_airmouse_frame(canvas, transport, connected, suspended,
-                                paused, b_scroll_active, buttons, preview_x, preview_y);
+                                bst.paused, bst.scroll_mode, bst.buttons,
+                                preview_x, preview_y, now_ms);
         }
 
         vTaskDelay(pdMS_TO_TICKS(10));

@@ -612,6 +612,7 @@ void esp_hidd_prf_cb_hdl(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if,
                 param->add_attr_tab.status == ESP_GATT_OK) {
                 incl_svc.start_hdl = param->add_attr_tab.handles[BAS_IDX_SVC];
                 incl_svc.end_hdl = incl_svc.start_hdl + BAS_IDX_NB -1;
+                s_bas_lvl_hdl = param->add_attr_tab.handles[BAS_IDX_BATT_LVL_VAL];
                 ESP_LOGI(HID_LE_PRF_TAG, "%s(), start added the hid service to the stack database. incl_handle = %d",
                            __func__, incl_svc.start_hdl);
                 esp_ble_gatts_create_attr_tab(hidd_le_gatt_db, gatts_if, HIDD_LE_IDX_NB, 0);
@@ -812,4 +813,17 @@ static void hid_add_id_tbl(void)
 
   // Setup report ID map
   hid_dev_register_reports(HID_NUM_REPORTS, hid_rpt_map);
+}
+
+void hidd_set_battery_level(uint16_t conn_id, bool notify, uint8_t level)
+{
+    if (level > 100) level = 100;
+    battary_lev = level;
+    if (s_bas_lvl_hdl != 0) {
+        esp_ble_gatts_set_attr_value(s_bas_lvl_hdl, sizeof(uint8_t), &battary_lev);
+        if (notify && hidd_le_env.gatt_if != 0) {
+            esp_ble_gatts_send_indicate(hidd_le_env.gatt_if, conn_id, s_bas_lvl_hdl,
+                                        sizeof(uint8_t), &battary_lev, false);
+        }
+    }
 }

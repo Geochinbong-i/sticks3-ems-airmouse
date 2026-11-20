@@ -9,12 +9,38 @@ struct AirMouseConfig {
     bool invert_y = false;
     bool swap_xy = false;
     bool natural_scroll = false;
+    bool flip_180 = false;   // true when display rotation == 2 (180 deg)
 };
 
 struct AirMouseDelta {
     int8_t dx = 0;
     int8_t dy = 0;
     int8_t wheel = 0;
+};
+
+struct AirMouseBtnState {
+    uint8_t buttons = 0;
+    bool scroll_mode = false;
+    bool paused = false;
+    bool exit_requested = false;
+    bool clicked_cue = false;
+};
+
+class AirMouseButtonGuard {
+public:
+    void reset();
+    AirMouseBtnState step(int64_t now_ms, bool a_down, bool b_down);
+
+private:
+    bool paused_ = false;
+    bool ab_chord_active_ = false;
+    int64_t ab_chord_start_ms_ = 0;
+    bool wait_all_release_ = false;
+
+    bool b_was_down_ = false;
+    int64_t b_down_ms_ = 0;
+    bool b_scroll_active_ = false;
+    int64_t rmb_pulse_until_ms_ = 0;
 };
 
 class GyroAirMouseFilter {

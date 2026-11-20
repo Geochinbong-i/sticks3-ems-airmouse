@@ -2,6 +2,7 @@
 
 #include <cstdint>
 
+void sound_fx_init();
 void sound_fx_apply_volume();
 void sound_fx_click();
 void sound_fx_confirm();

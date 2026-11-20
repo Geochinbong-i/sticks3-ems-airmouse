@@ -156,11 +156,88 @@ static void test_gyro_airmouse_calibration_and_motion() {
     assert(dp.dx == 0 && dp.dy == 0 && dp.wheel == 0);
 }
 
+static void test_gyro_flip_180() {
+    GyroAirMouseFilter f_norm;
+    GyroAirMouseFilter f_flip;
+    f_norm.reset_bias(0.0f, 0.0f, 0.0f);
+    f_flip.reset_bias(0.0f, 0.0f, 0.0f);
+
+    AirMouseConfig cfg_norm;
+    AirMouseConfig cfg_flip;
+    cfg_flip.flip_180 = true;
+
+    // Yaw right (gz = -30) -> positive dx in BOTH orientations
+    // Pitch nose up relative to StickS3 body (gx = +25) -> flips dy sign when 180 deg rotated
+    int dx_n = 0, dy_n = 0, dx_f = 0, dy_f = 0;
+    for (int i = 0; i < 10; i++) {
+        auto dn = f_norm.update(25.0f, 0.0f, -30.0f, 0.01f, cfg_norm, false, false);
+        auto df = f_flip.update(25.0f, 0.0f, -30.0f, 0.01f, cfg_flip, false, false);
+        dx_n += dn.dx; dy_n += dn.dy;
+        dx_f += df.dx; dy_f += df.dy;
+    }
+    assert(dx_n > 20 && dx_f == dx_n);
+    assert(dy_n < -15 && dy_f == -dy_n);
+}
+
+static void test_airmouse_button_guard() {
+    AirMouseButtonGuard g;
+
+    // 1. A+B chord tap with staggered release (B released before A) must NOT emit LMB
+    auto s = g.step(0, true, true);
+    assert(!s.paused && s.buttons == 0 && !s.exit_requested);
+    s = g.step(100, true, true);
+    assert(!s.paused && s.buttons == 0);
+
+    // B releases first while A stays down -> toggles pause, suppresses LMB
+    s = g.step(140, true, false);
+    assert(s.paused && s.clicked_cue && s.buttons == 0);
+    // Still holding A on next frame -> still suppressed
+    s = g.step(150, true, false);
+    assert(s.paused && s.buttons == 0);
+    // Unpause via another A+B chord and release B first while A stays down!
+    s = g.step(160, false, false); // both released first
+    assert(s.paused && s.buttons == 0);
+    s = g.step(200, true, true);
+    assert(s.paused && s.buttons == 0);
+    s = g.step(280, true, false); // B released before A while unpausing!
+    assert(!s.paused && s.clicked_cue && s.buttons == 0);
+    s = g.step(300, true, false); // A still held from chord -> MUST NOT click LMB!
+    assert(!s.paused && s.buttons == 0);
+    s = g.step(320, false, false); // both released -> guard clears
+    assert(s.buttons == 0);
+
+    // Now fresh A press emits LMB normally
+    s = g.step(340, true, false);
+    assert(s.buttons == 0x01);
+    s = g.step(360, false, false);
+    assert(s.buttons == 0);
+
+    // 2. B short tap -> RMB pulse, B hold >= 300ms -> scroll mode (no RMB)
+    s = g.step(400, false, true);
+    assert(s.buttons == 0 && !s.scroll_mode);
+    s = g.step(450, false, false);
+    assert(s.buttons == 0x02 && s.clicked_cue);
+
+    s = g.step(600, false, true);
+    s = g.step(920, false, true);
+    assert(s.scroll_mode && s.buttons == 0);
+    s = g.step(940, false, false);
+    assert(!s.scroll_mode && s.buttons == 0);
+
+    // 3. A+B hold >= 600ms -> exit_requested
+    s = g.step(1000, true, true);
+    assert(!s.exit_requested);
+    s = g.step(1610, true, true);
+    assert(s.exit_requested);
+}
+
 int main() {
     test_ems_timer_stopwatch_and_pause();
     test_ems_timer_epi_interval_and_overdue();
     test_ems_timer_presets_and_ring_log();
     test_gyro_airmouse_calibration_and_motion();
+    test_gyro_flip_180();
+    test_airmouse_button_guard();
     std::printf("ALL HOST TESTS PASSED\n");
     return 0;
 }

@@ -5,6 +5,7 @@
 #include "airmouse/airmouse_ui.h"
 
 #include "M5Unified.h"
+#include "esp_system.h"
 #include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -18,7 +19,7 @@ static void run_settings_menu() {
     input_wait_all_release();
 
     int sel = 0;
-    constexpr int kCount = 10;
+    constexpr int kCount = 11;
 
     while (true) {
         input_update();
@@ -71,6 +72,11 @@ static void run_settings_menu() {
                     break;
                 case 9:
                     app_settings_save();
+                    vTaskDelay(pdMS_TO_TICKS(100));
+                    esp_restart();
+                    break;
+                case 10:
+                    app_settings_save();
                     input_wait_all_release();
                     canvas.deleteSprite();
                     return;
@@ -97,7 +103,8 @@ static void run_settings_menu() {
         std::snprintf(labels[6], 32, "Volume: %d%%", g_settings.sound_volume);
         std::snprintf(labels[7], 32, "Mute: %s", g_settings.sound_muted ? "ON" : "OFF");
         std::snprintf(labels[8], 32, "Flip Scr: %s", g_settings.rotation == 2 ? "180" : "0");
-        std::snprintf(labels[9], 32, "< BACK");
+        std::snprintf(labels[9], 32, "Reboot Device");
+        std::snprintf(labels[10], 32, "< BACK");
 
         int start_idx = (sel >= 8) ? (sel - 7) : 0;
         int y = 28;
@@ -120,21 +127,39 @@ static void run_settings_menu() {
     }
 }
 
-static void draw_home_screen(M5Canvas &canvas, int sel) {
+static void draw_home_screen(M5Canvas &canvas, int sel, int64_t now_ms) {
     int w = canvas.width();
     int h = canvas.height();
+    bool ems_run = ems_timer_is_running();
+    bool ems_alarm = ems_timer_has_active_alarm();
+    bool flash_on = ((now_ms / 400) % 2) == 0;
+
     canvas.fillScreen(0x090D14);
 
     // Header
-    canvas.fillRect(0, 0, w, 24, 0x142033);
+    uint32_t hdr_col = (ems_alarm && flash_on) ? 0xB71C1C : 0x142033;
+    canvas.fillRect(0, 0, w, 24, hdr_col);
     canvas.setTextSize(1);
-    canvas.setTextColor(0x80D8FF, 0x142033);
+    canvas.setTextColor(0x80D8FF, hdr_col);
     canvas.setCursor(6, 8);
-    canvas.print("STICKS3");
+    if (ems_alarm && flash_on) {
+        canvas.setTextColor(0xFFFFFF, hdr_col);
+        canvas.print("EPI DUE!");
+    } else {
+        canvas.print("STICKS3");
+    }
 
-    if (g_settings.sound_muted) {
-        canvas.setTextColor(0xFFAB40, 0x142033);
-        canvas.setCursor(58, 8);
+    if (ems_alarm && !flash_on) {
+        canvas.setTextColor(0xFF8A80, hdr_col);
+        canvas.setCursor(56, 8);
+        canvas.print("DUE");
+    } else if (ems_run && !ems_alarm) {
+        canvas.setTextColor(0x69F0AE, hdr_col);
+        canvas.setCursor(56, 8);
+        canvas.print("EMS");
+    } else if (g_settings.sound_muted) {
+        canvas.setTextColor(0xFFAB40, hdr_col);
+        canvas.setCursor(56, 8);
         canvas.print("MUTE");
     }
 
@@ -143,7 +168,7 @@ static void draw_home_screen(M5Canvas &canvas, int sel) {
         if (batt > 100) batt = 100;
         char bstr[16];
         std::snprintf(bstr, sizeof(bstr), "%d%%", batt);
-        canvas.setTextColor(batt <= 20 ? 0xFF5252 : 0x69F0AE, 0x142033);
+        canvas.setTextColor(batt <= 20 ? 0xFF5252 : 0x69F0AE, hdr_col);
         canvas.setCursor(w - (int)std::strlen(bstr) * 6 - 6, 8);
         canvas.print(bstr);
     }
@@ -198,7 +223,9 @@ extern "C" void app_main(void) {
     app_settings_load();
     M5.Display.setRotation(g_settings.rotation);
     M5.Display.setBrightness(200);
+    sound_fx_init();
     sound_fx_apply_volume();
+    ems_timer_init();
 
     M5Canvas canvas(&M5.Display);
     canvas.createSprite(M5.Display.width(), M5.Display.height());
@@ -252,7 +279,7 @@ extern "C" void app_main(void) {
 
         if ((now_ms - last_draw_ms) >= 200) {
             last_draw_ms = now_ms;
-            draw_home_screen(canvas, sel);
+            draw_home_screen(canvas, sel, now_ms);
         }
 
         vTaskDelay(pdMS_TO_TICKS(20));

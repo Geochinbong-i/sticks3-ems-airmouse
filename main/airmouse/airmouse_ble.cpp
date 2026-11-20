@@ -161,3 +161,9 @@ void airmouse_ble_send(uint8_t buttons, int8_t dx, int8_t dy, int8_t wheel) {
     if (!s_connected) return;
     esp_hidd_send_mouse_wheel(s_conn_id, buttons, dx, dy, wheel);
 }
+
+void airmouse_ble_update_battery(int level) {
+    if (!s_ble_inited || level < 0) return;
+    if (level > 100) level = 100;
+    esp_hidd_set_battery_level(s_conn_id, s_connected, (uint8_t)level);
+}

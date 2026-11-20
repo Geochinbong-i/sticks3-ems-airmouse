@@ -6,6 +6,7 @@
 
 #include "M5Unified.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 #include <cstdio>
@@ -13,6 +14,59 @@
 
 static EmsTimerCore s_timer;
 static bool s_timer_cfg_applied = false;
+static SemaphoreHandle_t s_timer_mutex = nullptr;
+
+class TimerLock {
+public:
+    TimerLock() {
+        if (s_timer_mutex) xSemaphoreTake(s_timer_mutex, portMAX_DELAY);
+    }
+    ~TimerLock() {
+        if (s_timer_mutex) xSemaphoreGive(s_timer_mutex);
+    }
+    TimerLock(const TimerLock &) = delete;
+    TimerLock &operator=(const TimerLock &) = delete;
+};
+
+static void ems_timer_bg_task(void *arg) {
+    (void)arg;
+    while (true) {
+        int64_t now_ms = input_now_ms();
+        EmsTickResult tres{false, false, false};
+        {
+            TimerLock lock;
+            tres = s_timer.tick(now_ms);
+        }
+        if (tres.epi_just_due || tres.epi_reminder_beep) {
+            sound_fx_epi_due();
+        } else if (tres.preset_just_due) {
+            sound_fx_preset_due();
+        }
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
+}
+
+void ems_timer_init() {
+    if (s_timer_mutex) return;
+    s_timer_mutex = xSemaphoreCreateMutex();
+    {
+        TimerLock lock;
+        s_timer.set_epi_interval_sec(g_settings.epi_interval_sec);
+        s_timer.set_preset_index(g_settings.preset_idx);
+        s_timer_cfg_applied = true;
+    }
+    xTaskCreate(ems_timer_bg_task, "ems_bg", 2560, nullptr, 3, nullptr);
+}
+
+bool ems_timer_is_running() {
+    TimerLock lock;
+    return s_timer.state() == EmsState::Running;
+}
+
+bool ems_timer_has_active_alarm() {
+    TimerLock lock;
+    return s_timer.epi_alarm_active() || s_timer.preset_alarm_active();
+}
 
 enum class EmsAction : int {
     Epi = 0,
@@ -100,7 +154,12 @@ static void show_logs_modal(M5Canvas &canvas) {
             input_wait_all_release();
             return;
         }
-        size_t total = s_timer.event_count();
+
+        size_t total = 0;
+        {
+            TimerLock lock;
+            total = s_timer.event_count();
+        }
         if (input_a_pressed() && total > 8) {
             offset = (offset + 4 < total) ? (offset + 4) : 0;
             sound_fx_click();
@@ -120,6 +179,8 @@ static void show_logs_modal(M5Canvas &canvas) {
             canvas.setCursor(18, 90);
             canvas.print("No events logged");
         } else {
+            TimerLock lock;
+            total = s_timer.event_count();
             int y = 30;
             for (size_t i = offset; i < total && y < h - 24; i++) {
                 const EmsEvent *ev = s_timer.event_at(i);
@@ -153,8 +214,41 @@ static void show_logs_modal(M5Canvas &canvas) {
 static void draw_ems_frame(M5Canvas &canvas, int64_t now_ms, EmsAction sel_action) {
     int w = canvas.width();
     int h = canvas.height();
-    EmsState st = s_timer.state();
     bool flash_on = ((now_ms / 450) % 2) == 0;
+
+    EmsState st;
+    int shock_cnt;
+    int64_t total_ms;
+    int epi_int_sec;
+    int epi_doses;
+    bool epi_act;
+    int64_t epi_rem;
+    bool epi_overdue;
+    bool pre_on;
+    bool pre_done;
+    int pre_sec;
+    int64_t pre_rem;
+    size_t ev_cnt;
+    EmsEvent recent[3]{};
+    {
+        TimerLock lock;
+        st = s_timer.state();
+        shock_cnt = s_timer.shock_count();
+        total_ms = s_timer.total_elapsed_ms(now_ms);
+        epi_int_sec = s_timer.epi_interval_sec();
+        epi_doses = s_timer.epi_dose_count();
+        epi_act = s_timer.epi_active();
+        epi_rem = s_timer.epi_remaining_ms(now_ms);
+        epi_overdue = s_timer.epi_is_overdue(now_ms);
+        pre_on = s_timer.preset_enabled();
+        pre_done = s_timer.preset_is_done(now_ms);
+        pre_sec = s_timer.preset_sec();
+        pre_rem = s_timer.preset_remaining_ms(now_ms);
+        ev_cnt = s_timer.event_count();
+        for (size_t i = 0; i < 3 && i < ev_cnt; i++) {
+            recent[i] = *s_timer.event_at(i);
+        }
+    }
 
     canvas.fillScreen(0x090D14);
 
@@ -184,12 +278,12 @@ static void draw_ems_frame(M5Canvas &canvas, int64_t now_ms, EmsAction sel_actio
 
     // 2. Total Incident Stopwatch
     char tot_buf[16];
-    EmsTimerCore::format_hh_mm_ss(s_timer.total_elapsed_ms(now_ms), tot_buf, sizeof(tot_buf));
+    EmsTimerCore::format_hh_mm_ss(total_ms, tot_buf, sizeof(tot_buf));
     canvas.setTextColor(0x8FA3B8, 0x090D14);
     canvas.setCursor(6, 24);
     canvas.print("TOTAL");
     canvas.setCursor(64, 24);
-    canvas.printf("SHK:%d", s_timer.shock_count());
+    canvas.printf("SHK:%d", shock_cnt);
 
     canvas.setTextSize(2);
     canvas.setTextColor(0xFFFFFF, 0x090D14);
@@ -197,12 +291,10 @@ static void draw_ems_frame(M5Canvas &canvas, int64_t now_ms, EmsAction sel_actio
     canvas.print(tot_buf);
 
     // 3. Epinephrine Interval Card
-    int64_t epi_rem = s_timer.epi_remaining_ms(now_ms);
-    bool epi_overdue = s_timer.epi_is_overdue(now_ms);
     uint32_t epi_bg = 0x121B26;
     uint32_t epi_border = 0x2A3D54;
     uint32_t epi_fg = 0x69F0AE;
-    if (s_timer.epi_active()) {
+    if (epi_act) {
         if (epi_overdue) {
             epi_bg = flash_on ? 0x9E1414 : 0x3D0B0B;
             epi_border = 0xFF5252;
@@ -222,16 +314,16 @@ static void draw_ems_frame(M5Canvas &canvas, int64_t now_ms, EmsAction sel_actio
     canvas.setTextSize(1);
     canvas.setTextColor(0xCFD8DC, epi_bg);
     canvas.setCursor(10, 62);
-    canvas.printf("EPI %dm", s_timer.epi_interval_sec() / 60);
+    canvas.printf("EPI %dm", epi_int_sec / 60);
 
     char dose_str[24];
-    std::snprintf(dose_str, sizeof(dose_str), "DOSE #%d", s_timer.epi_dose_count());
+    std::snprintf(dose_str, sizeof(dose_str), "DOSE #%d", epi_doses);
     canvas.setCursor(w - (int)std::strlen(dose_str) * 6 - 10, 62);
     canvas.print(dose_str);
 
     char epi_buf[24];
-    if (!s_timer.epi_active()) {
-        EmsTimerCore::format_mm_ss((int64_t)s_timer.epi_interval_sec() * 1000, epi_buf, sizeof(epi_buf));
+    if (!epi_act) {
+        EmsTimerCore::format_mm_ss((int64_t)epi_int_sec * 1000, epi_buf, sizeof(epi_buf));
     } else if (epi_overdue) {
         char mmss[16];
         EmsTimerCore::format_mm_ss(-epi_rem, mmss, sizeof(mmss));
@@ -248,8 +340,8 @@ static void draw_ems_frame(M5Canvas &canvas, int64_t now_ms, EmsAction sel_actio
     // EPI Progress bar
     int bar_x = 10, bar_y = 107, bar_w = w - 20;
     canvas.fillRect(bar_x, bar_y, bar_w, 5, 0x0B0F17);
-    if (s_timer.epi_active()) {
-        int64_t tot_epi = (int64_t)s_timer.epi_interval_sec() * 1000;
+    if (epi_act) {
+        int64_t tot_epi = (int64_t)epi_int_sec * 1000;
         int fill = epi_overdue ? bar_w : (int)((epi_rem * bar_w) / tot_epi);
         if (fill < 0) fill = 0;
         if (fill > bar_w) fill = bar_w;
@@ -257,8 +349,6 @@ static void draw_ems_frame(M5Canvas &canvas, int64_t now_ms, EmsAction sel_actio
     }
 
     // 4. Countdown Preset Card (Vital / Reassess)
-    bool pre_on = s_timer.preset_enabled();
-    bool pre_done = s_timer.preset_is_done(now_ms);
     uint32_t pre_bg = (pre_done && flash_on) ? 0x0D47A1 : 0x101822;
     canvas.fillRoundRect(4, 121, w - 8, 32, 5, pre_bg);
     canvas.drawRoundRect(4, 121, w - 8, 32, 5, pre_done ? 0x40C4FF : 0x263547);
@@ -269,7 +359,7 @@ static void draw_ems_frame(M5Canvas &canvas, int64_t now_ms, EmsAction sel_actio
     if (!pre_on) {
         canvas.print("PRESET: OFF");
     } else {
-        canvas.printf("VITAL %dm", s_timer.preset_sec() / 60);
+        canvas.printf("VITAL %dm", pre_sec / 60);
     }
 
     if (pre_on) {
@@ -277,16 +367,15 @@ static void draw_ems_frame(M5Canvas &canvas, int64_t now_ms, EmsAction sel_actio
         if (pre_done) {
             std::snprintf(pbuf, sizeof(pbuf), "DUE!");
         } else {
-            EmsTimerCore::format_mm_ss(s_timer.preset_remaining_ms(now_ms), pbuf, sizeof(pbuf));
+            EmsTimerCore::format_mm_ss(pre_rem, pbuf, sizeof(pbuf));
         }
         canvas.setTextSize(2);
         canvas.setTextColor(pre_done ? 0xFFFFFF : 0x80D8FF, pre_bg);
         canvas.setCursor(w - (int)std::strlen(pbuf) * 12 - 10, 126);
         canvas.print(pbuf);
 
-        int64_t p_tot = (int64_t)s_timer.preset_sec() * 1000;
-        int64_t p_rem = s_timer.preset_remaining_ms(now_ms);
-        int p_fill = (int)((p_rem * (w - 20)) / p_tot);
+        int64_t p_tot = (int64_t)pre_sec * 1000;
+        int p_fill = (int)((pre_rem * (w - 20)) / p_tot);
         canvas.fillRect(10, 146, w - 20, 3, 0x090D14);
         canvas.fillRect(10, 146, p_fill, 3, pre_done ? 0xFFFFFF : 0x40C4FF);
     }
@@ -294,19 +383,19 @@ static void draw_ems_frame(M5Canvas &canvas, int64_t now_ms, EmsAction sel_actio
     // 5. Recent Events Mini-Strip (up to 3 newest)
     canvas.setTextSize(1);
     int ey = 157;
-    if (s_timer.event_count() == 0) {
+    if (ev_cnt == 0) {
         canvas.setTextColor(0x607D8B, 0x090D14);
         canvas.setCursor(8, ey + 6);
         canvas.print("Press B to START");
     } else {
-        for (size_t i = 0; i < 3 && i < s_timer.event_count(); i++) {
-            const EmsEvent *ev = s_timer.event_at(i);
+        for (size_t i = 0; i < 3 && i < ev_cnt; i++) {
+            const EmsEvent &ev = recent[i];
             canvas.setTextColor(0x6E8296, 0x090D14);
             canvas.setCursor(6, ey);
-            canvas.printf("%02u:%02u", (unsigned)(ev->at_sec / 60), (unsigned)(ev->at_sec % 60));
+            canvas.printf("%02u:%02u", (unsigned)(ev.at_sec / 60), (unsigned)(ev.at_sec % 60));
             canvas.setTextColor(i == 0 ? 0xECEFF1 : 0x90A4AE, 0x090D14);
             canvas.setCursor(42, ey);
-            canvas.print(ev->label);
+            canvas.print(ev.label);
             ey += 11;
         }
     }
@@ -339,10 +428,14 @@ static void draw_ems_frame(M5Canvas &canvas, int64_t now_ms, EmsAction sel_actio
 }
 
 void ems_timer_ui_run() {
-    if (!s_timer_cfg_applied || s_timer.state() == EmsState::Idle) {
-        s_timer.set_epi_interval_sec(g_settings.epi_interval_sec);
-        s_timer.set_preset_index(g_settings.preset_idx);
-        s_timer_cfg_applied = true;
+    ems_timer_init();
+    {
+        TimerLock lock;
+        if (!s_timer_cfg_applied || s_timer.state() == EmsState::Idle) {
+            s_timer.set_epi_interval_sec(g_settings.epi_interval_sec);
+            s_timer.set_preset_index(g_settings.preset_idx);
+            s_timer_cfg_applied = true;
+        }
     }
 
     M5Canvas canvas(&M5.Display);
@@ -365,7 +458,6 @@ void ems_timer_ui_run() {
         int64_t now_ms = input_now_ms();
 
         if (input_ab_held(600)) {
-            sound_fx_stop();
             sound_fx_click();
             input_wait_ab_release();
             canvas.deleteSprite();
@@ -376,20 +468,26 @@ void ems_timer_ui_run() {
         bool b_down = input_b_down();
 
         if (a_down && b_down) {
-            // Reset single-button tracking during A+B hold
             a_was_down = false;
             b_was_down = false;
             a_long_fired = false;
             b_long_fired = false;
         } else {
-            // Button A handling (tap: next action / cycle preset, hold 650ms: ack alarm / mute)
+            // Button A handling
             if (a_down && !a_was_down) {
                 a_down_ms = now_ms;
                 a_long_fired = false;
             } else if (a_down && a_was_down && !a_long_fired && (now_ms - a_down_ms) >= 650) {
                 a_long_fired = true;
-                if (s_timer.epi_alarm_active() || s_timer.preset_alarm_active()) {
-                    s_timer.acknowledge_alarms();
+                bool had_alarm = false;
+                {
+                    TimerLock lock;
+                    had_alarm = s_timer.epi_alarm_active() || s_timer.preset_alarm_active();
+                    if (had_alarm) {
+                        s_timer.acknowledge_alarms();
+                    }
+                }
+                if (had_alarm) {
                     sound_fx_stop();
                 } else {
                     g_settings.sound_muted = !g_settings.sound_muted;
@@ -398,9 +496,16 @@ void ems_timer_ui_run() {
                 }
                 sound_fx_click();
             } else if (!a_down && a_was_down && !a_long_fired) {
-                if (s_timer.state() == EmsState::Idle) {
-                    s_timer.cycle_preset();
-                    g_settings.preset_idx = s_timer.preset_index();
+                bool is_idle = false;
+                {
+                    TimerLock lock;
+                    is_idle = (s_timer.state() == EmsState::Idle);
+                    if (is_idle) {
+                        s_timer.cycle_preset();
+                        g_settings.preset_idx = s_timer.preset_index();
+                    }
+                }
+                if (is_idle) {
                     app_settings_save();
                 } else {
                     sel_action = (EmsAction)(((int)sel_action + 1) % (int)EmsAction::Count);
@@ -409,55 +514,88 @@ void ems_timer_ui_run() {
             }
             a_was_down = a_down;
 
-            // Button B handling (tap: start / exec action, hold 650ms: cycle EPI 3/4/5m if Idle, or instant LOG EPI if active)
+            // Button B handling
             if (b_down && !b_was_down) {
                 b_down_ms = now_ms;
                 b_long_fired = false;
             } else if (b_down && b_was_down && !b_long_fired && (now_ms - b_down_ms) >= 650) {
                 b_long_fired = true;
-                if (s_timer.state() == EmsState::Idle) {
-                    s_timer.cycle_epi_interval();
-                    g_settings.epi_interval_sec = s_timer.epi_interval_sec();
+                bool is_idle = false;
+                {
+                    TimerLock lock;
+                    is_idle = (s_timer.state() == EmsState::Idle);
+                    if (is_idle) {
+                        s_timer.cycle_epi_interval();
+                        g_settings.epi_interval_sec = s_timer.epi_interval_sec();
+                    } else {
+                        s_timer.log_epi(now_ms);
+                    }
+                }
+                if (is_idle) {
                     app_settings_save();
                     sound_fx_confirm();
                 } else {
-                    s_timer.log_epi(now_ms);
                     sel_action = EmsAction::Epi;
                     sound_fx_epi_logged();
                 }
             } else if (!b_down && b_was_down && !b_long_fired) {
-                if (s_timer.state() == EmsState::Idle) {
-                    s_timer.start(now_ms);
+                EmsState cur_st;
+                {
+                    TimerLock lock;
+                    cur_st = s_timer.state();
+                    if (cur_st == EmsState::Idle) {
+                        s_timer.start(now_ms);
+                    }
+                }
+                if (cur_st == EmsState::Idle) {
                     sel_action = EmsAction::Epi;
                     sound_fx_confirm();
                 } else {
                     switch (sel_action) {
                         case EmsAction::Epi:
-                            s_timer.log_epi(now_ms);
+                            {
+                                TimerLock lock;
+                                s_timer.log_epi(now_ms);
+                            }
                             sound_fx_epi_logged();
                             break;
                         case EmsAction::Shock:
-                            s_timer.log_event(EmsEventType::Shock, now_ms);
+                            {
+                                TimerLock lock;
+                                s_timer.log_event(EmsEventType::Shock, now_ms);
+                            }
                             sound_fx_confirm();
                             sel_action = EmsAction::Epi;
                             break;
                         case EmsAction::Rosc:
-                            s_timer.log_event(EmsEventType::Rosc, now_ms);
+                            {
+                                TimerLock lock;
+                                s_timer.log_event(EmsEventType::Rosc, now_ms);
+                            }
                             sound_fx_confirm();
                             sel_action = EmsAction::Epi;
                             break;
                         case EmsAction::Vital:
-                            s_timer.log_event(EmsEventType::Vital, now_ms);
+                            {
+                                TimerLock lock;
+                                s_timer.log_event(EmsEventType::Vital, now_ms);
+                            }
                             sound_fx_confirm();
                             sel_action = EmsAction::Epi;
                             break;
                         case EmsAction::Airway:
-                            s_timer.log_event(EmsEventType::Airway, now_ms);
+                            {
+                                TimerLock lock;
+                                s_timer.log_event(EmsEventType::Airway, now_ms);
+                            }
                             sound_fx_confirm();
                             sel_action = EmsAction::Epi;
                             break;
                         case EmsAction::PauseResume:
-                            s_timer.toggle_pause(now_ms);
+                            {
+                                TimerLock lock;
+                                s_timer.toggle_pause(now_ms);
+                            }
                             sound_fx_confirm();
                             break;
                         case EmsAction::Logs:
@@ -465,6 +603,7 @@ void ems_timer_ui_run() {
                             break;
                         case EmsAction::Reset:
                             if (confirm_reset_modal(canvas)) {
+                                TimerLock lock;
                                 s_timer.reset();
                                 sel_action = EmsAction::Epi;
                             }
@@ -475,13 +614,6 @@ void ems_timer_ui_run() {
                 }
             }
             b_was_down = b_down;
-        }
-
-        EmsTickResult tres = s_timer.tick(now_ms);
-        if (tres.epi_just_due || tres.epi_reminder_beep) {
-            sound_fx_epi_due();
-        } else if (tres.preset_just_due) {
-            sound_fx_preset_due();
         }
 
         if ((now_ms - last_draw_ms) >= 100) {

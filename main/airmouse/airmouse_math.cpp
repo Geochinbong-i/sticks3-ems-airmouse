@@ -19,6 +19,82 @@ int8_t extract_clamped_i8(float &accum) {
 }
 } // namespace
 
+void AirMouseButtonGuard::reset() {
+    paused_ = false;
+    ab_chord_active_ = false;
+    ab_chord_start_ms_ = 0;
+    wait_all_release_ = false;
+    b_was_down_ = false;
+    b_down_ms_ = 0;
+    b_scroll_active_ = false;
+    rmb_pulse_until_ms_ = 0;
+}
+
+AirMouseBtnState AirMouseButtonGuard::step(int64_t now_ms, bool a_down, bool b_down) {
+    AirMouseBtnState out{};
+    out.paused = paused_;
+
+    if (wait_all_release_) {
+        if (!a_down && !b_down) {
+            wait_all_release_ = false;
+        }
+        return out;
+    }
+
+    if (a_down && b_down) {
+        if (!ab_chord_active_) {
+            ab_chord_active_ = true;
+            ab_chord_start_ms_ = now_ms;
+            b_scroll_active_ = false;
+            b_was_down_ = false;
+        } else if ((now_ms - ab_chord_start_ms_) >= 600) {
+            ab_chord_active_ = false;
+            wait_all_release_ = true;
+            out.exit_requested = true;
+        }
+        return out;
+    }
+
+    if (ab_chord_active_) {
+        ab_chord_active_ = false;
+        paused_ = !paused_;
+        out.paused = paused_;
+        out.clicked_cue = true;
+        b_was_down_ = false;
+        b_scroll_active_ = false;
+        rmb_pulse_until_ms_ = 0;
+        if (a_down || b_down) {
+            // Prevent staggered release from firing a spurious LMB or RMB
+            wait_all_release_ = true;
+        }
+        return out;
+    }
+
+    if (b_down && !b_was_down_) {
+        b_down_ms_ = now_ms;
+        b_scroll_active_ = false;
+    } else if (b_down && b_was_down_) {
+        if ((now_ms - b_down_ms_) >= 300) {
+            b_scroll_active_ = true;
+        }
+    } else if (!b_down && b_was_down_) {
+        if (!b_scroll_active_ && !paused_) {
+            rmb_pulse_until_ms_ = now_ms + 45;
+            out.clicked_cue = true;
+        }
+        b_scroll_active_ = false;
+    }
+    b_was_down_ = b_down;
+
+    if (!paused_) {
+        if (a_down) out.buttons |= 0x01;
+        if (now_ms < rmb_pulse_until_ms_) out.buttons |= 0x02;
+        out.scroll_mode = b_scroll_active_;
+    }
+
+    return out;
+}
+
 GyroAirMouseFilter::GyroAirMouseFilter() = default;
 
 void GyroAirMouseFilter::reset_motion() {
@@ -96,8 +172,10 @@ AirMouseDelta GyroAirMouseFilter::update(float gx, float gy, float gz, float dt_
     // StickS3 remote posture (screen facing up, top pointing toward monitor):
     //   Yaw right  => gz < 0 => positive X (cursor right)
     //   Pitch up   => gx > 0 => negative Y (cursor up)
+    // When flipped 180 deg around +Z (USB-C pointing toward monitor):
+    //   Yaw around +Z keeps the same sign; pitch around +X flips sign.
     float rx = -uz;
-    float ry = -ux;
+    float ry = cfg.flip_180 ? ux : -ux;
 
     if (cfg.swap_xy) {
         float tmp = rx;

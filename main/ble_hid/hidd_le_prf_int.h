@@ -331,5 +331,6 @@ void hidd_get_attr_value(uint16_t handle, uint16_t *length, uint8_t **value);
 
 esp_err_t hidd_register_cb(void);
 
+void hidd_set_battery_level(uint16_t conn_id, bool notify, uint8_t level);
 
 #endif  ///__HID_DEVICE_LE_PRF__
