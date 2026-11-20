@@ -571,7 +571,7 @@ void time_sync_ui_run() {
             canvas.setCursor(w - canvas.textWidth(sflag) - 9, 26);
             canvas.print(sflag);
 
-            char dbuf[20], tbuf[16];
+            char dbuf[48], tbuf[32];
             std::snprintf(dbuf, sizeof(dbuf), "%04d-%02d-%02d",
                           tm_now.tm_year + 1900, tm_now.tm_mon + 1, tm_now.tm_mday);
             std::snprintf(tbuf, sizeof(tbuf), "%02d:%02d:%02d",
@@ -616,11 +616,11 @@ void time_sync_ui_run() {
             } else if (sel == 1) {
                 canvas.setCursor(9, 171);
                 if (g_settings.wifi_ssid[0] != '\0') {
-                    char sb[24];
-                    std::snprintf(sb, sizeof(sb), "STA:%s", g_settings.wifi_ssid);
+                    char sb[48];
+                    std::snprintf(sb, sizeof(sb), "STA:%.12s", g_settings.wifi_ssid);
                     canvas.print(sb);
                 } else {
-                    canvas.print("STA: (Use AP to set)");
+                    canvas.print("STA: (Set via AP)");
                 }
                 canvas.setCursor(9, 187);
                 canvas.print("NTP: pool.ntp.org");

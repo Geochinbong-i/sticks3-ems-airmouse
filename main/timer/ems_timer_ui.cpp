@@ -182,7 +182,6 @@ static void show_logs_modal(M5Canvas &canvas) {
             sound_fx_click();
         }
 
-        int w = canvas.width();
         int h = canvas.height();
         canvas.fillScreen(0x0B0F17);
 
