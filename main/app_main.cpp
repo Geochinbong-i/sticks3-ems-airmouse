@@ -228,7 +228,7 @@ extern "C" void app_main(void) {
     auto cfg = M5.config();
     M5.begin(cfg);
     ESP_LOGI(TAG, "M5.begin ok (%dx%d imu=%d spk=%d)",
-             M5.Display.width(), M5.Display.height(),
+             (int)M5.Display.width(), (int)M5.Display.height(),
              (int)M5.Imu.isEnabled(), (int)M5.Speaker.isEnabled());
 
     app_settings_load();
