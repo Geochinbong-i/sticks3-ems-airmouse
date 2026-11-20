@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@v4
         with:
           persist-credentials: false
       - name: Run host unit tests with sanitizers
@@ -25,18 +25,18 @@ jobs:
     timeout-minutes: 45
     needs: host-checks
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@v4
         with:
           persist-credentials: false
           fetch-depth: 0
       - name: Build ESP-IDF v5.3.1 firmware for ESP32-S3 (StickS3)
-        uses: espressif/esp-idf-ci-action@9d38657f3d789ca759b2b37aaf5ceffbc42c4f0d
+        uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: v5.3.1
           target: esp32s3
           command: idf.py build && python tools/package_build.py
       - name: Upload firmware binaries
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92e6478c62f4b1800
+        uses: actions/upload-artifact@v4
         with:
           name: sticks3-ems-airmouse-${{ github.sha }}
           path: dist/
