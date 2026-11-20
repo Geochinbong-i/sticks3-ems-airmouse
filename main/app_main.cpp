@@ -5,6 +5,8 @@
 #include "airmouse/airmouse_ui.h"
 
 #include "M5Unified.h"
+#include "esp_log.h"
+#include "esp_psram.h"
 #include "esp_system.h"
 #include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
@@ -12,6 +14,8 @@
 
 #include <cstdio>
 #include <cstring>
+
+static const char *TAG = "sticks3";
 
 static void run_settings_menu() {
     M5Canvas canvas(&M5.Display);
@@ -211,14 +215,21 @@ static void draw_home_screen(M5Canvas &canvas, int sel, int64_t now_ms) {
 }
 
 extern "C" void app_main(void) {
+    ESP_LOGI(TAG, "boot start: psram_ok=%d size=%u",
+             (int)esp_psram_is_initialized(), (unsigned)esp_psram_get_size());
+
     esp_err_t nvs_ret = nvs_flash_init();
     if (nvs_ret == ESP_ERR_NVS_NO_FREE_PAGES || nvs_ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         nvs_flash_erase();
-        nvs_flash_init();
+        nvs_ret = nvs_flash_init();
     }
+    ESP_LOGI(TAG, "nvs_flash_init: %s", esp_err_to_name(nvs_ret));
 
     auto cfg = M5.config();
     M5.begin(cfg);
+    ESP_LOGI(TAG, "M5.begin ok (%dx%d imu=%d spk=%d)",
+             M5.Display.width(), M5.Display.height(),
+             (int)M5.Imu.isEnabled(), (int)M5.Speaker.isEnabled());
 
     app_settings_load();
     M5.Display.setRotation(g_settings.rotation);
