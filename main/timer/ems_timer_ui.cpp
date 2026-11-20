@@ -70,7 +70,6 @@ static bool confirm_reset_modal(M5Canvas &canvas) {
         }
 
         int w = canvas.width();
-        int h = canvas.height();
         canvas.fillScreen(0x140A0A);
         canvas.drawRoundRect(8, 56, w - 16, 120, 8, 0xFF5252);
         canvas.setTextSize(1);
@@ -175,7 +174,8 @@ static void draw_ems_frame(M5Canvas &canvas, int64_t now_ms, EmsAction sel_actio
     }
     int batt = M5.Power.getBatteryLevel();
     if (batt >= 0) {
-        char bstr[8];
+        if (batt > 100) batt = 100;
+        char bstr[16];
         std::snprintf(bstr, sizeof(bstr), "%d%%", batt);
         canvas.setTextColor(0xCFD8DC, hdr_col);
         canvas.setCursor(w - (int)std::strlen(bstr) * 6 - 4, 6);
@@ -224,16 +224,16 @@ static void draw_ems_frame(M5Canvas &canvas, int64_t now_ms, EmsAction sel_actio
     canvas.setCursor(10, 62);
     canvas.printf("EPI %dm", s_timer.epi_interval_sec() / 60);
 
-    char dose_str[16];
+    char dose_str[24];
     std::snprintf(dose_str, sizeof(dose_str), "DOSE #%d", s_timer.epi_dose_count());
     canvas.setCursor(w - (int)std::strlen(dose_str) * 6 - 10, 62);
     canvas.print(dose_str);
 
-    char epi_buf[16];
+    char epi_buf[24];
     if (!s_timer.epi_active()) {
         EmsTimerCore::format_mm_ss((int64_t)s_timer.epi_interval_sec() * 1000, epi_buf, sizeof(epi_buf));
     } else if (epi_overdue) {
-        char mmss[12];
+        char mmss[16];
         EmsTimerCore::format_mm_ss(-epi_rem, mmss, sizeof(mmss));
         std::snprintf(epi_buf, sizeof(epi_buf), "+%s", mmss);
     } else {
@@ -325,7 +325,7 @@ static void draw_ems_frame(M5Canvas &canvas, int64_t now_ms, EmsAction sel_actio
         const char *aname = action_name(sel_action, st);
         canvas.fillRoundRect(4, h - 44, w - 8, 22, 4, acol);
         canvas.setTextColor(0xFFFFFF, acol);
-        char act_line[24];
+        char act_line[32];
         std::snprintf(act_line, sizeof(act_line), "[ %s ]", aname);
         canvas.setCursor((w - (int)std::strlen(act_line) * 6) / 2, h - 37);
         canvas.print(act_line);

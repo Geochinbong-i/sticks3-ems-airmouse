@@ -87,17 +87,17 @@ static void run_settings_menu() {
         canvas.setCursor(6, 7);
         canvas.print("SETTINGS");
 
-        char labels[kCount][24];
-        std::snprintf(labels[0], 24, "EPI Int: %dm", g_settings.epi_interval_sec / 60);
-        std::snprintf(labels[1], 24, "Mouse Sens: %d", g_settings.air_sensitivity);
-        std::snprintf(labels[2], 24, "Invert X: %s", g_settings.air_invert_x ? "ON" : "OFF");
-        std::snprintf(labels[3], 24, "Invert Y: %s", g_settings.air_invert_y ? "ON" : "OFF");
-        std::snprintf(labels[4], 24, "Swap X/Y: %s", g_settings.air_swap_xy ? "ON" : "OFF");
-        std::snprintf(labels[5], 24, "Nat Scroll:%s", g_settings.air_natural_scroll ? "ON" : "OFF");
-        std::snprintf(labels[6], 24, "Volume: %d%%", g_settings.sound_volume);
-        std::snprintf(labels[7], 24, "Mute: %s", g_settings.sound_muted ? "ON" : "OFF");
-        std::snprintf(labels[8], 24, "Flip Scr: %s", g_settings.rotation == 2 ? "180" : "0");
-        std::snprintf(labels[9], 24, "< BACK");
+        char labels[kCount][32];
+        std::snprintf(labels[0], 32, "EPI Int: %dm", g_settings.epi_interval_sec / 60);
+        std::snprintf(labels[1], 32, "Mouse Sens: %d", g_settings.air_sensitivity);
+        std::snprintf(labels[2], 32, "Invert X: %s", g_settings.air_invert_x ? "ON" : "OFF");
+        std::snprintf(labels[3], 32, "Invert Y: %s", g_settings.air_invert_y ? "ON" : "OFF");
+        std::snprintf(labels[4], 32, "Swap X/Y: %s", g_settings.air_swap_xy ? "ON" : "OFF");
+        std::snprintf(labels[5], 32, "Nat Scroll:%s", g_settings.air_natural_scroll ? "ON" : "OFF");
+        std::snprintf(labels[6], 32, "Volume: %d%%", g_settings.sound_volume);
+        std::snprintf(labels[7], 32, "Mute: %s", g_settings.sound_muted ? "ON" : "OFF");
+        std::snprintf(labels[8], 32, "Flip Scr: %s", g_settings.rotation == 2 ? "180" : "0");
+        std::snprintf(labels[9], 32, "< BACK");
 
         int start_idx = (sel >= 8) ? (sel - 7) : 0;
         int y = 28;
@@ -140,7 +140,8 @@ static void draw_home_screen(M5Canvas &canvas, int sel) {
 
     int batt = M5.Power.getBatteryLevel();
     if (batt >= 0) {
-        char bstr[10];
+        if (batt > 100) batt = 100;
+        char bstr[16];
         std::snprintf(bstr, sizeof(bstr), "%d%%", batt);
         canvas.setTextColor(batt <= 20 ? 0xFF5252 : 0x69F0AE, 0x142033);
         canvas.setCursor(w - (int)std::strlen(bstr) * 6 - 6, 8);

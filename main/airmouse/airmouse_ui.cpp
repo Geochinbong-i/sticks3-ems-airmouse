@@ -38,7 +38,8 @@ static void draw_airmouse_frame(M5Canvas &canvas,
 
     int batt = M5.Power.getBatteryLevel();
     if (batt >= 0) {
-        char bstr[10];
+        if (batt > 100) batt = 100;
+        char bstr[16];
         std::snprintf(bstr, sizeof(bstr), "%d%%", batt);
         canvas.setCursor(w - (int)std::strlen(bstr) * 6 - 6, 8);
         canvas.print(bstr);
