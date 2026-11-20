@@ -43,7 +43,9 @@ int64_t s_http_epoch = 0;
 bool s_http_has_tz = false;
 int s_http_tz_hours = 9;
 
-volatile bool s_wifi_cfg_saved_notice = false;
+volatile bool s_wifi_cfg_pending = false;
+char s_pending_ssid[33]{};
+char s_pending_pass[65]{};
 
 static const char kPortalHtml[] = R"rawhtml(<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -209,13 +211,14 @@ esp_err_t http_wifi_handler(httpd_req_t *req) {
     url_decode_inplace(ssid);
     url_decode_inplace(pass);
 
-    std::strncpy(g_settings.wifi_ssid, ssid, sizeof(g_settings.wifi_ssid) - 1);
-    g_settings.wifi_ssid[sizeof(g_settings.wifi_ssid) - 1] = '\0';
-    std::strncpy(g_settings.wifi_pass, pass, sizeof(g_settings.wifi_pass) - 1);
-    g_settings.wifi_pass[sizeof(g_settings.wifi_pass) - 1] = '\0';
-    app_settings_save();
+    portENTER_CRITICAL(&s_sync_mux);
+    std::strncpy(s_pending_ssid, ssid, sizeof(s_pending_ssid) - 1);
+    s_pending_ssid[sizeof(s_pending_ssid) - 1] = '\0';
+    std::strncpy(s_pending_pass, pass, sizeof(s_pending_pass) - 1);
+    s_pending_pass[sizeof(s_pending_pass) - 1] = '\0';
+    s_wifi_cfg_pending = true;
+    portEXIT_CRITICAL(&s_sync_mux);
 
-    s_wifi_cfg_saved_notice = true;
     httpd_resp_set_type(req, "text/plain");
     return httpd_resp_sendstr(req, "Saved! Now select 2. Wi-Fi SNTP on StickS3.");
 }
@@ -273,6 +276,7 @@ bool start_ap_portal() {
 
 struct StaSyncCtx {
     EventGroupHandle_t eg;
+    int retries;
 };
 
 void sta_event_cb(void *arg, esp_event_base_t base, int32_t id, void *data) {
@@ -281,7 +285,12 @@ void sta_event_cb(void *arg, esp_event_base_t base, int32_t id, void *data) {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
-        xEventGroupSetBits(ctx->eg, BIT1);
+        if (ctx->retries < 2) {
+            ctx->retries++;
+            esp_wifi_connect();
+        } else {
+            xEventGroupSetBits(ctx->eg, BIT1);
+        }
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         xEventGroupSetBits(ctx->eg, BIT0);
     }
@@ -296,7 +305,7 @@ bool run_sta_sntp(const char *ssid, const char *pass, M5Canvas &canvas) {
     if (esp_wifi_init(&init_cfg) != ESP_OK) return false;
 
     EventGroupHandle_t eg = xEventGroupCreate();
-    StaSyncCtx ctx{eg};
+    StaSyncCtx ctx{eg, 0};
     esp_event_handler_instance_t inst_wifi = nullptr;
     esp_event_handler_instance_t inst_ip = nullptr;
     esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &sta_event_cb, &ctx, &inst_wifi);
@@ -440,8 +449,13 @@ void time_sync_ui_run() {
             last_draw_ms = 0;
         }
 
-        if (s_wifi_cfg_saved_notice) {
-            s_wifi_cfg_saved_notice = false;
+        if (s_wifi_cfg_pending) {
+            portENTER_CRITICAL(&s_sync_mux);
+            std::memcpy(g_settings.wifi_ssid, s_pending_ssid, sizeof(g_settings.wifi_ssid));
+            std::memcpy(g_settings.wifi_pass, s_pending_pass, sizeof(g_settings.wifi_pass));
+            s_wifi_cfg_pending = false;
+            portEXIT_CRITICAL(&s_sync_mux);
+            app_settings_save();
             sound_fx_confirm();
             banner_msg = "Wi-Fi Saved!";
             banner_col = 0x69F0AE;

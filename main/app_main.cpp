@@ -281,25 +281,25 @@ static void draw_home_screen(M5Canvas &canvas, int sel, int64_t now_ms) {
         }
 
         if (is_sel) {
-            // Selection indicator bar on left + crisp accent outline
+            // Selection indicator bar on left + crisp accent outline (strictly clipped to tile bounds)
             uint32_t acc = cards[i].accent;
+            canvas.setClipRect(kBoardX, y, kBoardW, kTileH);
             if (i == 0) {
-                canvas.fillRoundRect(kBoardX, y, 8, kTileH, kRad, acc);
-                canvas.fillRect(kBoardX, y + kTileH - kRad, 8, kRad, acc);
-                canvas.fillRect(kBoardX + 4, y, 4, kTileH, acc);
-                canvas.drawRoundRect(kBoardX, y, kBoardW, kTileH, kRad, acc);
-                canvas.drawRoundRect(kBoardX + 1, y + 1, kBoardW - 2, kTileH - 2, kRad - 1, acc);
+                canvas.fillRoundRect(kBoardX, y, 8, kTileH + kRad, kRad, acc);
+                canvas.drawRoundRect(kBoardX, y, kBoardW, kTileH + kRad, kRad, acc);
+                canvas.drawRoundRect(kBoardX + 1, y + 1, kBoardW - 2, kTileH + kRad - 2, kRad - 1, acc);
+                canvas.fillRect(kBoardX, y + kTileH - 2, kBoardW, 2, acc);
             } else if (i == 3) {
-                canvas.fillRoundRect(kBoardX, y, 8, kTileH, kRad, acc);
-                canvas.fillRect(kBoardX, y, 8, kRad, acc);
-                canvas.fillRect(kBoardX + 4, y, 4, kTileH, acc);
-                canvas.drawRoundRect(kBoardX, y, kBoardW, kTileH, kRad, acc);
-                canvas.drawRoundRect(kBoardX + 1, y + 1, kBoardW - 2, kTileH - 2, kRad - 1, acc);
+                canvas.fillRoundRect(kBoardX, y - kRad, 8, kTileH + kRad, kRad, acc);
+                canvas.drawRoundRect(kBoardX, y - kRad, kBoardW, kTileH + kRad, kRad, acc);
+                canvas.drawRoundRect(kBoardX + 1, y - kRad + 1, kBoardW - 2, kTileH + kRad - 2, kRad - 1, acc);
+                canvas.fillRect(kBoardX, y, kBoardW, 2, acc);
             } else {
                 canvas.fillRect(kBoardX, y, 8, kTileH, acc);
                 canvas.drawRect(kBoardX, y, kBoardW, kTileH, acc);
                 canvas.drawRect(kBoardX + 1, y + 1, kBoardW - 2, kTileH - 2, acc);
             }
+            canvas.clearClipRect();
         }
 
         int tx = kBoardX + 11;
