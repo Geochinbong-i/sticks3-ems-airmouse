@@ -1,0 +1,11 @@
+build/
+build-host/
+dist/
+managed_components/
+sdkconfig
+sdkconfig.old
+dependencies.lock
+.DS_Store
+*.bin
+*.elf
+*.map

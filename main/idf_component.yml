@@ -1,0 +1,4 @@
+dependencies:
+  m5stack/m5unified: "0.2.29"
+  m5stack/m5gfx: "0.2.36"
+  espressif/esp_tinyusb: ">=1.4.4,<2.0.0"

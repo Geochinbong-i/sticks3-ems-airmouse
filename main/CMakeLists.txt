@@ -1,0 +1,33 @@
+idf_component_register(
+    SRCS
+        "app_main.cpp"
+        "app_settings.cpp"
+        "sound_fx.cpp"
+        "input_util.cpp"
+        "timer/ems_timer_core.cpp"
+        "timer/ems_timer_ui.cpp"
+        "airmouse/airmouse_math.cpp"
+        "airmouse/airmouse_ble.cpp"
+        "airmouse/airmouse_usb.cpp"
+        "airmouse/airmouse_ui.cpp"
+        "ble_hid/hid_dev.c"
+        "ble_hid/hid_device_le_prf.c"
+        "ble_hid/esp_hidd_prf_api.c"
+    INCLUDE_DIRS
+        "."
+        "timer"
+        "airmouse"
+        "ble_hid"
+    PRIV_REQUIRES
+        nvs_flash
+        bt
+        esp_timer
+        driver
+)
+
+set_source_files_properties(
+    "ble_hid/hid_dev.c"
+    "ble_hid/hid_device_le_prf.c"
+    "ble_hid/esp_hidd_prf_api.c"
+    PROPERTIES COMPILE_OPTIONS "-Wno-unused-const-variable"
+)
