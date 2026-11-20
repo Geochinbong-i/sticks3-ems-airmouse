@@ -24,12 +24,22 @@ struct AirMouseBtnState {
     bool paused = false;
     bool exit_requested = false;
     bool clicked_cue = false;
+    bool rel_cal_requested = false;
 };
 
 class AirMouseButtonGuard {
 public:
     void reset();
     AirMouseBtnState step(int64_t now_ms, bool a_down, bool b_down);
+
+    void set_paused(bool paused) {
+        paused_ = paused;
+        ab_chord_active_ = false;
+        b_was_down_ = false;
+        b_scroll_active_ = false;
+        rmb_pulse_until_ms_ = 0;
+        wait_all_release_ = true;
+    }
 
 private:
     bool paused_ = false;
@@ -55,6 +65,12 @@ public:
     void calib_add_sample(float gx, float gy, float gz);
     void calib_finish();
 
+    // Set held-pose neutral frame from gravity vector (accel) and optionally update gyro bias.
+    void set_relative_pose(float ax, float ay, float az,
+                           bool align_sign_to_abs = true,
+                           float abs_az = 1.0f);
+    void reset_relative_pose();
+
     // Process one 3-axis gyro sample (deg/s) with elapsed dt_sec.
     AirMouseDelta update(float gx, float gy, float gz, float dt_sec,
                          const AirMouseConfig &cfg, bool scroll_mode, bool paused);
@@ -62,16 +78,29 @@ public:
     float bias_x() const { return bias_x_; }
     float bias_y() const { return bias_y_; }
     float bias_z() const { return bias_z_; }
+    float rel_gx() const { return rel_gx_; }
+    float rel_gy() const { return rel_gy_; }
+    float rel_gz() const { return rel_gz_; }
 
 private:
     float bias_x_ = 0.0f;
     float bias_y_ = 0.0f;
     float bias_z_ = 0.0f;
 
+    // Unit vector representing "up/gravity-normal" in StickS3 body frame (default +Z).
+    float rel_gx_ = 0.0f;
+    float rel_gy_ = 0.0f;
+    float rel_gz_ = 1.0f;
+
     float cal_sum_x_ = 0.0f;
     float cal_sum_y_ = 0.0f;
     float cal_sum_z_ = 0.0f;
     int cal_samples_ = 0;
+
+    float prev_gx_ = 0.0f;
+    float prev_gy_ = 0.0f;
+    float prev_gz_ = 0.0f;
+    bool prev_valid_ = false;
 
     float accum_x_ = 0.0f;
     float accum_y_ = 0.0f;

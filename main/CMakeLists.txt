@@ -4,8 +4,14 @@ idf_component_register(
         "app_settings.cpp"
         "sound_fx.cpp"
         "input_util.cpp"
+        "ui_common.cpp"
+        "imu_cal.cpp"
+        "time_sync.cpp"
+        "time_sync_parse.cpp"
         "timer/ems_timer_core.cpp"
         "timer/ems_timer_ui.cpp"
+        "timer/simple_timer_core.cpp"
+        "timer/simple_timer_ui.cpp"
         "airmouse/airmouse_math.cpp"
         "airmouse/airmouse_ble.cpp"
         "airmouse/airmouse_usb.cpp"
@@ -21,9 +27,14 @@ idf_component_register(
     PRIV_REQUIRES
         nvs_flash
         bt
+        esp_wifi
+        esp_netif
+        esp_event
+        esp_http_server
         esp_timer
         esp_psram
         driver
+        lwip
 )
 
 set_source_files_properties(

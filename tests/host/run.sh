@@ -6,6 +6,8 @@ g++ -std=c++17 -g -O1 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-om
   -I main \
   tests/host/test_main.cpp \
   main/timer/ems_timer_core.cpp \
+  main/timer/simple_timer_core.cpp \
   main/airmouse/airmouse_math.cpp \
+  main/time_sync_parse.cpp \
   -o build-host/test-core
 ASAN_OPTIONS=detect_leaks=0 ./build-host/test-core

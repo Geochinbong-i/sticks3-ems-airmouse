@@ -166,6 +166,9 @@ void esp_hidd_send_mouse_wheel(uint16_t conn_id, uint8_t mouse_button, int8_t mi
 
 void esp_hidd_set_battery_level(uint16_t conn_id, bool notify, uint8_t level);
 
+typedef void (*esp_hidd_time_write_cb_t)(const uint8_t *data, uint16_t len);
+void esp_hidd_set_time_write_cb(esp_hidd_time_write_cb_t cb);
+
 #ifdef __cplusplus
 }
 #endif

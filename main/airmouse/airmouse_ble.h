@@ -7,3 +7,6 @@ void airmouse_ble_stop();
 bool airmouse_ble_is_connected();
 void airmouse_ble_send(uint8_t buttons, int8_t dx, int8_t dy, int8_t wheel);
 void airmouse_ble_update_battery(int level);
+
+bool airmouse_ble_start_time_sync(void (*on_time_write)(const uint8_t *data, uint16_t len));
+void airmouse_ble_stop_time_sync();

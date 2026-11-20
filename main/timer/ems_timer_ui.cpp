@@ -3,6 +3,7 @@
 #include "app_settings.h"
 #include "input_util.h"
 #include "sound_fx.h"
+#include "ui_common.h"
 
 #include "M5Unified.h"
 #include "freertos/FreeRTOS.h"
@@ -125,20 +126,36 @@ static bool confirm_reset_modal(M5Canvas &canvas) {
 
         int w = canvas.width();
         canvas.fillScreen(0x140A0A);
-        canvas.drawRoundRect(8, 56, w - 16, 120, 8, 0xFF5252);
+        ui_draw_header(canvas, "RESET EMS", 0x2B1212, 0xFF8A80);
+
+        canvas.drawRoundRect(6, 32, w - 12, 168, 7, 0xFF5252);
+        canvas.fillRoundRect(7, 33, w - 14, 166, 6, 0x1B0D0D);
+
+        canvas.setFont(&fonts::Font2);
         canvas.setTextSize(1);
-        canvas.setTextColor(0xFF8A80, 0x140A0A);
-        canvas.setCursor(20, 72);
-        canvas.print("RESET INCIDENT?");
-        canvas.setTextColor(0xDDDDDD, 0x140A0A);
-        canvas.setCursor(16, 94);
-        canvas.print("Clears timer & logs");
-        canvas.setTextColor(0x80CBC4, 0x140A0A);
-        canvas.setCursor(22, 128);
-        canvas.print("A : CANCEL");
-        canvas.setTextColor(0xFF5252, 0x140A0A);
-        canvas.setCursor(22, 146);
-        canvas.print("B : CONFIRM RESET");
+        canvas.setTextWrap(false);
+
+        canvas.setTextColor(0xFF8A80, 0x1B0D0D);
+        canvas.setCursor(14, 42);
+        canvas.print("RESET EMS?");
+
+        canvas.setTextColor(0xE2E8F0, 0x1B0D0D);
+        canvas.setCursor(14, 68);
+        canvas.print("Clears timer and");
+        canvas.setCursor(14, 84);
+        canvas.print("all event logs.");
+
+        canvas.fillRoundRect(12, 114, w - 24, 30, 4, 0x183834);
+        canvas.setTextColor(0x80CBC4, 0x183834);
+        canvas.setCursor(18, 121);
+        canvas.print("A : Keep Data");
+
+        canvas.fillRoundRect(12, 152, w - 24, 30, 4, 0x6A1616);
+        canvas.setTextColor(0xFFCDD2, 0x6A1616);
+        canvas.setCursor(18, 159);
+        canvas.print("B : Reset All");
+
+        ui_draw_footer2(canvas, "A: Cancel  B: Clear", "Hold A+B : Go Back", 0x140A0A, 0xC09E9E);
         canvas.pushSprite(0, 0);
         vTaskDelay(pdMS_TO_TICKS(30));
     }
@@ -168,21 +185,24 @@ static void show_logs_modal(M5Canvas &canvas) {
         int w = canvas.width();
         int h = canvas.height();
         canvas.fillScreen(0x0B0F17);
-        canvas.fillRect(0, 0, w, 22, 0x1C2838);
+
+        char lhdr[24];
+        std::snprintf(lhdr, sizeof(lhdr), "LOGS (%u)", (unsigned)total);
+        ui_draw_header(canvas, lhdr, 0x1C2838, 0xFFFFFF);
+
+        canvas.setFont(&fonts::Font2);
         canvas.setTextSize(1);
-        canvas.setTextColor(0xFFFFFF, 0x1C2838);
-        canvas.setCursor(6, 7);
-        canvas.printf("EVENT LOG (%u)", (unsigned)total);
+        canvas.setTextWrap(false);
 
         if (total == 0) {
             canvas.setTextColor(0x8899AA, 0x0B0F17);
-            canvas.setCursor(18, 90);
+            canvas.setCursor(14, 96);
             canvas.print("No events logged");
         } else {
             TimerLock lock;
             total = s_timer.event_count();
-            int y = 30;
-            for (size_t i = offset; i < total && y < h - 24; i++) {
+            int y = 26;
+            for (size_t i = offset; i < total && y < h - 46; i++) {
                 const EmsEvent *ev = s_timer.event_at(i);
                 if (!ev) break;
                 int mm = (int)(ev->at_sec / 60);
@@ -194,18 +214,16 @@ static void show_logs_modal(M5Canvas &canvas) {
                 else if (ev->type == EmsEventType::Vital) col = 0x80D8FF;
 
                 canvas.setTextColor(0x78909C, 0x0B0F17);
-                canvas.setCursor(6, y);
+                canvas.setCursor(4, y);
                 canvas.printf("%02d:%02d", mm, ss);
                 canvas.setTextColor(col, 0x0B0F17);
-                canvas.setCursor(44, y);
+                canvas.setCursor(48, y);
                 canvas.print(ev->label);
                 y += 18;
             }
         }
 
-        canvas.setTextColor(0x8899AA, 0x0B0F17);
-        canvas.setCursor(6, h - 14);
-        canvas.print("A:Page  B:Close");
+        ui_draw_footer2(canvas, "A: NextPg  B: Back", "Hold A+B : Close");
         canvas.pushSprite(0, 0);
         vTaskDelay(pdMS_TO_TICKS(30));
     }
@@ -229,7 +247,7 @@ static void draw_ems_frame(M5Canvas &canvas, int64_t now_ms, EmsAction sel_actio
     int pre_sec;
     int64_t pre_rem;
     size_t ev_cnt;
-    EmsEvent recent[3]{};
+    EmsEvent recent[2]{};
     {
         TimerLock lock;
         st = s_timer.state();
@@ -245,49 +263,37 @@ static void draw_ems_frame(M5Canvas &canvas, int64_t now_ms, EmsAction sel_actio
         pre_sec = s_timer.preset_sec();
         pre_rem = s_timer.preset_remaining_ms(now_ms);
         ev_cnt = s_timer.event_count();
-        for (size_t i = 0; i < 3 && i < ev_cnt; i++) {
+        for (size_t i = 0; i < 2 && i < ev_cnt; i++) {
             recent[i] = *s_timer.event_at(i);
         }
     }
 
     canvas.fillScreen(0x090D14);
 
-    // 1. Top Bar
+    // 1. Top Bar with vertical battery / plug badge
     uint32_t hdr_col = (st == EmsState::Running) ? 0x143326
                      : (st == EmsState::Paused ? 0x4A360D : 0x1A2433);
-    canvas.fillRect(0, 0, w, 20, hdr_col);
-    canvas.setTextSize(1);
-    canvas.setTextColor(0xFFFFFF, hdr_col);
-    canvas.setCursor(5, 6);
-    canvas.print(st == EmsState::Running ? "EMS RUN" : (st == EmsState::Paused ? "EMS PAUSE" : "EMS READY"));
-
-    if (g_settings.sound_muted) {
-        canvas.setTextColor(0xFFAB40, hdr_col);
-        canvas.setCursor(66, 6);
-        canvas.print("MUTE");
-    }
-    int batt = M5.Power.getBatteryLevel();
-    if (batt >= 0) {
-        if (batt > 100) batt = 100;
-        char bstr[16];
-        std::snprintf(bstr, sizeof(bstr), "%d%%", batt);
-        canvas.setTextColor(0xCFD8DC, hdr_col);
-        canvas.setCursor(w - (int)std::strlen(bstr) * 6 - 4, 6);
-        canvas.print(bstr);
-    }
+    const char *st_title = (st == EmsState::Running) ? "EMS RUN"
+                         : (st == EmsState::Paused ? "EMS PAUSE" : "EMS READY");
+    ui_draw_header(canvas, st_title, hdr_col, 0xFFFFFF,
+                   g_settings.sound_muted ? "M" : nullptr);
 
     // 2. Total Incident Stopwatch
     char tot_buf[16];
     EmsTimerCore::format_hh_mm_ss(total_ms, tot_buf, sizeof(tot_buf));
-    canvas.setTextColor(0x8FA3B8, 0x090D14);
-    canvas.setCursor(6, 24);
+    canvas.setFont(&fonts::Font2);
+    canvas.setTextSize(1);
+    canvas.setTextWrap(false);
+    canvas.setTextColor(0x90A4AE, 0x090D14);
+    canvas.setCursor(4, 24);
     canvas.print("TOTAL");
-    canvas.setCursor(64, 24);
+    canvas.setCursor(w - 50, 24);
     canvas.printf("SHK:%d", shock_cnt);
 
+    canvas.setFont(&fonts::Font0);
     canvas.setTextSize(2);
     canvas.setTextColor(0xFFFFFF, 0x090D14);
-    canvas.setCursor((w - (int)std::strlen(tot_buf) * 12) / 2, 35);
+    canvas.setCursor((w - (int)std::strlen(tot_buf) * 12) / 2, 39);
     canvas.print(tot_buf);
 
     // 3. Epinephrine Interval Card
@@ -308,17 +314,18 @@ static void draw_ems_frame(M5Canvas &canvas, int64_t now_ms, EmsAction sel_actio
         epi_fg = 0x80CBC4;
     }
 
-    canvas.fillRoundRect(4, 57, w - 8, 60, 6, epi_bg);
-    canvas.drawRoundRect(4, 57, w - 8, 60, 6, epi_border);
+    canvas.fillRoundRect(4, 58, w - 8, 56, 5, epi_bg);
+    canvas.drawRoundRect(4, 58, w - 8, 56, 5, epi_border);
 
+    canvas.setFont(&fonts::Font2);
     canvas.setTextSize(1);
     canvas.setTextColor(0xCFD8DC, epi_bg);
-    canvas.setCursor(10, 62);
+    canvas.setCursor(9, 60);
     canvas.printf("EPI %dm", epi_int_sec / 60);
 
     char dose_str[24];
-    std::snprintf(dose_str, sizeof(dose_str), "DOSE #%d", epi_doses);
-    canvas.setCursor(w - (int)std::strlen(dose_str) * 6 - 10, 62);
+    std::snprintf(dose_str, sizeof(dose_str), "#%d", epi_doses);
+    canvas.setCursor(w - canvas.textWidth(dose_str) - 9, 60);
     canvas.print(dose_str);
 
     char epi_buf[24];
@@ -332,30 +339,32 @@ static void draw_ems_frame(M5Canvas &canvas, int64_t now_ms, EmsAction sel_actio
         EmsTimerCore::format_mm_ss(epi_rem, epi_buf, sizeof(epi_buf));
     }
 
-    canvas.setTextSize(3);
+    canvas.setFont(&fonts::Font4);
+    canvas.setTextSize(1);
     canvas.setTextColor(epi_fg, epi_bg);
-    canvas.setCursor((w - (int)std::strlen(epi_buf) * 18) / 2, 76);
-    canvas.print(epi_buf);
+    canvas.setTextDatum(MC_DATUM);
+    canvas.drawString(epi_buf, w / 2, 90);
+    canvas.setTextDatum(TL_DATUM);
 
-    // EPI Progress bar
-    int bar_x = 10, bar_y = 107, bar_w = w - 20;
-    canvas.fillRect(bar_x, bar_y, bar_w, 5, 0x0B0F17);
+    int bar_x = 9, bar_y = 107, bar_w = w - 18;
+    canvas.fillRect(bar_x, bar_y, bar_w, 4, 0x0B0F17);
     if (epi_act) {
         int64_t tot_epi = (int64_t)epi_int_sec * 1000;
         int fill = epi_overdue ? bar_w : (int)((epi_rem * bar_w) / tot_epi);
         if (fill < 0) fill = 0;
         if (fill > bar_w) fill = bar_w;
-        canvas.fillRect(bar_x, bar_y, fill, 5, epi_overdue ? 0xFF5252 : epi_fg);
+        canvas.fillRect(bar_x, bar_y, fill, 4, epi_overdue ? 0xFF5252 : epi_fg);
     }
 
     // 4. Countdown Preset Card (Vital / Reassess)
     uint32_t pre_bg = (pre_done && flash_on) ? 0x0D47A1 : 0x101822;
-    canvas.fillRoundRect(4, 121, w - 8, 32, 5, pre_bg);
-    canvas.drawRoundRect(4, 121, w - 8, 32, 5, pre_done ? 0x40C4FF : 0x263547);
+    canvas.fillRoundRect(4, 117, w - 8, 28, 5, pre_bg);
+    canvas.drawRoundRect(4, 117, w - 8, 28, 5, pre_done ? 0x40C4FF : 0x263547);
 
+    canvas.setFont(&fonts::Font2);
     canvas.setTextSize(1);
     canvas.setTextColor(0x90CAF9, pre_bg);
-    canvas.setCursor(10, 127);
+    canvas.setCursor(9, 121);
     if (!pre_on) {
         canvas.print("PRESET: OFF");
     } else {
@@ -369,59 +378,60 @@ static void draw_ems_frame(M5Canvas &canvas, int64_t now_ms, EmsAction sel_actio
         } else {
             EmsTimerCore::format_mm_ss(pre_rem, pbuf, sizeof(pbuf));
         }
-        canvas.setTextSize(2);
+        canvas.setFont(&fonts::Font2);
+        canvas.setTextSize(1);
         canvas.setTextColor(pre_done ? 0xFFFFFF : 0x80D8FF, pre_bg);
-        canvas.setCursor(w - (int)std::strlen(pbuf) * 12 - 10, 126);
+        canvas.setCursor(w - canvas.textWidth(pbuf) - 9, 121);
         canvas.print(pbuf);
 
         int64_t p_tot = (int64_t)pre_sec * 1000;
-        int p_fill = (int)((pre_rem * (w - 20)) / p_tot);
-        canvas.fillRect(10, 146, w - 20, 3, 0x090D14);
-        canvas.fillRect(10, 146, p_fill, 3, pre_done ? 0xFFFFFF : 0x40C4FF);
+        int p_fill = (int)((pre_rem * (w - 18)) / p_tot);
+        canvas.fillRect(9, 139, w - 18, 3, 0x090D14);
+        canvas.fillRect(9, 139, p_fill, 3, pre_done ? 0xFFFFFF : 0x40C4FF);
     }
 
-    // 5. Recent Events Mini-Strip (up to 3 newest)
+    // 5. Recent Events Mini-Strip (up to 2 newest in Font2)
+    canvas.setFont(&fonts::Font2);
     canvas.setTextSize(1);
-    int ey = 157;
+    int ey = 148;
     if (ev_cnt == 0) {
-        canvas.setTextColor(0x607D8B, 0x090D14);
+        canvas.setTextColor(0x78909C, 0x090D14);
         canvas.setCursor(8, ey + 6);
         canvas.print("Press B to START");
     } else {
-        for (size_t i = 0; i < 3 && i < ev_cnt; i++) {
+        for (size_t i = 0; i < 2 && i < ev_cnt; i++) {
             const EmsEvent &ev = recent[i];
-            canvas.setTextColor(0x6E8296, 0x090D14);
+            canvas.setTextColor(0x78909C, 0x090D14);
             canvas.setCursor(6, ey);
             canvas.printf("%02u:%02u", (unsigned)(ev.at_sec / 60), (unsigned)(ev.at_sec % 60));
             canvas.setTextColor(i == 0 ? 0xECEFF1 : 0x90A4AE, 0x090D14);
-            canvas.setCursor(42, ey);
+            canvas.setCursor(48, ey);
             canvas.print(ev.label);
-            ey += 11;
+            ey += 15;
         }
     }
 
-    // 6. Action / Controls Footer
+    // 6. Action Bar + Enlarged 2-line Footer
     if (st == EmsState::Idle) {
-        canvas.fillRoundRect(4, h - 44, w - 8, 22, 4, 0x1B5E20);
+        canvas.fillRoundRect(4, h - 56, w - 8, 22, 4, 0x1B5E20);
+        canvas.setFont(&fonts::Font2);
         canvas.setTextColor(0xFFFFFF, 0x1B5E20);
-        canvas.setCursor(22, h - 37);
-        canvas.print("B: START TIMER");
-        canvas.setTextColor(0x78909C, 0x090D14);
-        canvas.setCursor(4, h - 18);
-        canvas.print("A:Preset HoldB:EPI A+B:Ex");
+        canvas.setTextDatum(MC_DATUM);
+        canvas.drawString("B: START TIMER", w / 2, h - 45);
+        canvas.setTextDatum(TL_DATUM);
+        ui_draw_footer2(canvas, "A:Preset  HoldB:EPI", "Hold A+B : Go Home");
     } else {
         uint32_t acol = action_color(sel_action);
         const char *aname = action_name(sel_action, st);
-        canvas.fillRoundRect(4, h - 44, w - 8, 22, 4, acol);
+        canvas.fillRoundRect(4, h - 56, w - 8, 22, 4, acol);
+        canvas.setFont(&fonts::Font2);
         canvas.setTextColor(0xFFFFFF, acol);
         char act_line[32];
         std::snprintf(act_line, sizeof(act_line), "[ %s ]", aname);
-        canvas.setCursor((w - (int)std::strlen(act_line) * 6) / 2, h - 37);
-        canvas.print(act_line);
-
-        canvas.setTextColor(0x78909C, 0x090D14);
-        canvas.setCursor(4, h - 18);
-        canvas.print("A:Act B:OK HB:EPI A+B:Ex");
+        canvas.setTextDatum(MC_DATUM);
+        canvas.drawString(act_line, w / 2, h - 45);
+        canvas.setTextDatum(TL_DATUM);
+        ui_draw_footer2(canvas, "A:Act  B:OK  HB:EPI", "Hold A+B : Go Home");
     }
 
     canvas.pushSprite(0, 0);

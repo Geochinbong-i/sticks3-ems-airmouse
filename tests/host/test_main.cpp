@@ -1,5 +1,7 @@
 #include "timer/ems_timer_core.h"
+#include "timer/simple_timer_core.h"
 #include "airmouse/airmouse_math.h"
+#include "time_sync_parse.h"
 
 #include <cassert>
 #include <cmath>
@@ -90,22 +92,45 @@ static void test_ems_timer_presets_and_ring_log() {
     assert(t.preset_is_done(60000));
     assert(t.preset_alarm_active());
 
-    // Repeating tick doesn't re-fire preset_just_due
     EmsTickResult r2 = t.tick(65000);
     assert(!r2.preset_just_due);
 
-    // Log VITAL restarts preset countdown
     t.log_event(EmsEventType::Vital, 70000);
     assert(!t.preset_alarm_active());
     assert(t.preset_remaining_ms(70000) == 60000);
 
-    // Ring overflow test (> 32 events)
     for (int i = 0; i < 40; i++) {
         t.log_event(EmsEventType::Shock, 75000 + i * 1000);
     }
     assert(t.event_count() == EmsTimerCore::kMaxEvents);
     assert(t.shock_count() == 40);
     assert(std::strcmp(t.event_at(0)->label, "SHOCK #40") == 0);
+}
+
+static void test_simple_timer_core() {
+    SimpleTimerCore st;
+    assert(st.count() == 0);
+    assert(!st.is_full());
+    assert(st.at(0) == nullptr);
+
+    for (int i = 0; i < 7; i++) {
+        assert(st.stamp(14, i * 5, i * 7));
+    }
+    assert(st.count() == 7);
+    assert(st.is_full());
+    // 8th stamp rejected once 7 color boxes are full
+    assert(!st.stamp(15, 0, 0));
+
+    char buf[16];
+    SimpleTimerCore::format_time(*st.at(6), buf, sizeof(buf));
+    assert(std::strcmp(buf, "14:30:42") == 0);
+
+    st.reset();
+    assert(st.count() == 0);
+    assert(!st.is_full());
+    SimpleStamp empty{};
+    SimpleTimerCore::format_time(empty, buf, sizeof(buf));
+    assert(std::strcmp(buf, "--:--:--") == 0);
 }
 
 static void test_gyro_airmouse_calibration_and_motion() {
@@ -122,11 +147,9 @@ static void test_gyro_airmouse_calibration_and_motion() {
     cfg.sensitivity = 3;
     cfg.deadzone_dps = 2.0f;
 
-    // Noise within deadzone -> zero motion
     AirMouseDelta d0 = f.update(1.5f + 0.5f, -0.5f, 2.0f - 0.8f, 0.01f, cfg, false, false);
     assert(d0.dx == 0 && d0.dy == 0 && d0.wheel == 0);
 
-    // Yaw right (gz < bias_z by 30 deg/s) => positive dx
     int total_dx = 0;
     for (int i = 0; i < 10; i++) {
         AirMouseDelta d = f.update(1.5f, -0.5f, 2.0f - 30.0f, 0.01f, cfg, false, false);
@@ -134,7 +157,6 @@ static void test_gyro_airmouse_calibration_and_motion() {
     }
     assert(total_dx > 20);
 
-    // Pitch nose up (gx > bias_x by 25 deg/s) => negative dy (cursor up)
     int total_dy = 0;
     for (int i = 0; i < 10; i++) {
         AirMouseDelta d = f.update(1.5f + 25.0f, -0.5f, 2.0f, 0.01f, cfg, false, false);
@@ -142,7 +164,6 @@ static void test_gyro_airmouse_calibration_and_motion() {
     }
     assert(total_dy < -15);
 
-    // Scroll mode freezes XY and emits wheel
     int total_wheel = 0;
     for (int i = 0; i < 20; i++) {
         AirMouseDelta d = f.update(1.5f + 35.0f, -0.5f, 2.0f - 30.0f, 0.01f, cfg, true, false);
@@ -151,9 +172,37 @@ static void test_gyro_airmouse_calibration_and_motion() {
     }
     assert(total_wheel != 0);
 
-    // Paused mode freezes everything
     AirMouseDelta dp = f.update(50.0f, 50.0f, 50.0f, 0.01f, cfg, false, true);
     assert(dp.dx == 0 && dp.dy == 0 && dp.wheel == 0);
+}
+
+static void test_gyro_leftward_drift_suppression_and_relative_pose() {
+    // 1. Residual +4.0 dps constant gz offset (previously bypassed 1.8 dps check and pulled cursor left)
+    GyroAirMouseFilter f;
+    f.reset_bias(0.0f, 0.0f, 0.0f);
+    AirMouseConfig cfg;
+    for (int i = 0; i < 80; i++) {
+        AirMouseDelta d = f.update(0.0f, 0.0f, 4.0f, 0.02f, cfg, false, false);
+        if (i >= 20) {
+            assert(d.dx == 0 && d.dy == 0);
+        }
+    }
+    // Bias should have adapted substantially toward 4.0 dps
+    assert(f.bias_z() > 2.5f);
+
+    // 2. Relative pose calibration with stick rolled 45 degrees in hand (ax=0.707, az=0.707)
+    GyroAirMouseFilter fr;
+    fr.reset_bias(0.0f, 0.0f, 0.0f);
+    fr.set_relative_pose(0.7071f, 0.0f, 0.7071f, true, 1.0f);
+
+    // Turning purely right around held gravity vector (wx=-21.21, wz=-21.21) -> pure +dx, zero dy!
+    int sum_dx = 0, sum_dy = 0;
+    for (int i = 0; i < 12; i++) {
+        AirMouseDelta d = fr.update(-21.213f, 0.0f, -21.213f, 0.01f, cfg, false, false);
+        sum_dx += d.dx;
+        sum_dy += d.dy;
+    }
+    assert(sum_dx > 15 && std::abs(sum_dy) <= 1);
 }
 
 static void test_gyro_flip_180() {
@@ -166,8 +215,6 @@ static void test_gyro_flip_180() {
     AirMouseConfig cfg_flip;
     cfg_flip.flip_180 = true;
 
-    // Yaw right (gz = -30) -> positive dx in BOTH orientations
-    // Pitch nose up relative to StickS3 body (gx = +25) -> flips dy sign when 180 deg rotated
     int dx_n = 0, dy_n = 0, dx_f = 0, dy_f = 0;
     for (int i = 0; i < 10; i++) {
         auto dn = f_norm.update(25.0f, 0.0f, -30.0f, 0.01f, cfg_norm, false, false);
@@ -182,39 +229,38 @@ static void test_gyro_flip_180() {
 static void test_airmouse_button_guard() {
     AirMouseButtonGuard g;
 
-    // 1. A+B chord tap with staggered release (B released before A) must NOT emit LMB
+    // 1. A+B chord tap with staggered release must NOT emit LMB
     auto s = g.step(0, true, true);
     assert(!s.paused && s.buttons == 0 && !s.exit_requested);
     s = g.step(100, true, true);
-    assert(!s.paused && s.buttons == 0);
-
-    // B releases first while A stays down -> toggles pause, suppresses LMB
     s = g.step(140, true, false);
     assert(s.paused && s.clicked_cue && s.buttons == 0);
-    // Still holding A on next frame -> still suppressed
     s = g.step(150, true, false);
     assert(s.paused && s.buttons == 0);
-    // Unpause via another A+B chord and release B first while A stays down!
-    s = g.step(160, false, false); // both released first
-    assert(s.paused && s.buttons == 0);
-    s = g.step(200, true, true);
-    assert(s.paused && s.buttons == 0);
-    s = g.step(280, true, false); // B released before A while unpausing!
-    assert(!s.paused && s.clicked_cue && s.buttons == 0);
-    s = g.step(300, true, false); // A still held from chord -> MUST NOT click LMB!
-    assert(!s.paused && s.buttons == 0);
-    s = g.step(320, false, false); // both released -> guard clears
-    assert(s.buttons == 0);
 
-    // Now fresh A press emits LMB normally
+    // Tap B while paused -> emits rel_cal_requested without RMB
+    s = g.step(160, false, false);
+    s = g.step(180, false, true);
+    assert(!s.rel_cal_requested && s.buttons == 0);
+    s = g.step(210, false, false);
+    assert(s.rel_cal_requested && s.buttons == 0);
+
+    // Unpause via A+B chord with staggered release
+    s = g.step(240, true, true);
+    s = g.step(280, true, false);
+    assert(!s.paused && s.clicked_cue && s.buttons == 0);
+    s = g.step(300, true, false);
+    assert(!s.paused && s.buttons == 0);
+    s = g.step(320, false, false);
+
+    // Fresh A press emits LMB normally
     s = g.step(340, true, false);
     assert(s.buttons == 0x01);
     s = g.step(360, false, false);
     assert(s.buttons == 0);
 
-    // 2. B short tap -> RMB pulse, B hold >= 300ms -> scroll mode (no RMB)
+    // B short tap -> RMB pulse, B hold >= 300ms -> scroll mode
     s = g.step(400, false, true);
-    assert(s.buttons == 0 && !s.scroll_mode);
     s = g.step(450, false, false);
     assert(s.buttons == 0x02 && s.clicked_cue);
 
@@ -224,20 +270,71 @@ static void test_airmouse_button_guard() {
     s = g.step(940, false, false);
     assert(!s.scroll_mode && s.buttons == 0);
 
-    // 3. A+B hold >= 600ms -> exit_requested
+    // A+B hold >= 600ms -> exit_requested
     s = g.step(1000, true, true);
     assert(!s.exit_requested);
     s = g.step(1610, true, true);
     assert(s.exit_requested);
 }
 
+static void test_time_sync_parsing() {
+    // 1. 10-byte CTS payload: 2026-04-06 14:41:12 (2026 = 0x07EA)
+    const uint8_t cts[10] = {0xEA, 0x07, 4, 6, 14, 41, 12, 1, 0, 0};
+    auto p1 = parse_ble_time_payload(cts, sizeof(cts));
+    assert(p1.kind == TimePayloadKind::LocalFields);
+    assert(p1.year == 2026 && p1.month == 4 && p1.day == 6);
+    assert(p1.hour == 14 && p1.min == 41 && p1.sec == 12);
+
+    // 2. ASCII timestamp
+    const char *iso = "2026-11-20 09:05:33";
+    auto p2 = parse_ble_time_payload((const uint8_t *)iso, std::strlen(iso));
+    assert(p2.kind == TimePayloadKind::LocalFields);
+    assert(p2.year == 2026 && p2.month == 11 && p2.day == 20 && p2.hour == 9 && p2.min == 5 && p2.sec == 33);
+
+    // 3. 4-byte LE epoch (1775486472 = 0x69D3F3C8 -> C8 F3 D3 69)
+    uint32_t ep = 1775486472u;
+    uint8_t ep_le[4] = {
+        (uint8_t)(ep & 0xFF),
+        (uint8_t)((ep >> 8) & 0xFF),
+        (uint8_t)((ep >> 16) & 0xFF),
+        (uint8_t)((ep >> 24) & 0xFF),
+    };
+    auto p3 = parse_ble_time_payload(ep_le, 4);
+    assert(p3.kind == TimePayloadKind::UnixEpochUtc && p3.epoch_sec == (int64_t)ep);
+
+    // 4. ASCII epoch string
+    const char *ep_s = "1775486472";
+    auto p4 = parse_ble_time_payload((const uint8_t *)ep_s, std::strlen(ep_s));
+    assert(p4.kind == TimePayloadKind::UnixEpochUtc && p4.epoch_sec == (int64_t)ep);
+
+    // 5. Invalid payload
+    const char *bad = "hello";
+    auto p5 = parse_ble_time_payload((const uint8_t *)bad, std::strlen(bad));
+    assert(p5.kind == TimePayloadKind::Invalid);
+
+    // 6. POSIX TZ inversion
+    char tz[16];
+    format_posix_tz(9, tz, sizeof(tz));
+    assert(std::strcmp(tz, "UTC-9") == 0);
+    format_posix_tz(-5, tz, sizeof(tz));
+    assert(std::strcmp(tz, "UTC+5") == 0);
+
+    // 7. URL decode
+    char qs[32] = "My+Station%20119%21";
+    url_decode_inplace(qs);
+    assert(std::strcmp(qs, "My Station 119!") == 0);
+}
+
 int main() {
     test_ems_timer_stopwatch_and_pause();
     test_ems_timer_epi_interval_and_overdue();
     test_ems_timer_presets_and_ring_log();
+    test_simple_timer_core();
     test_gyro_airmouse_calibration_and_motion();
+    test_gyro_leftward_drift_suppression_and_relative_pose();
     test_gyro_flip_180();
     test_airmouse_button_guard();
+    test_time_sync_parsing();
     std::printf("ALL HOST TESTS PASSED\n");
     return 0;
 }

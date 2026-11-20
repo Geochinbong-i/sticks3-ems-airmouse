@@ -14,16 +14,24 @@
 
 static bool s_bt_mem_released = false;
 static bool s_ble_inited = false;
+static bool s_reg_done = false;
 static bool s_connected = false;
 static bool s_want_adv = false;
+static bool s_time_sync_mode = false;
 static uint16_t s_conn_id = 0;
 static esp_bd_addr_t s_remote_bda{};
 
 static constexpr uint16_t kMouseAppearance = 0x03C2; // HID Mouse
+static constexpr uint16_t kGenericAppearance = 0x00C0; // Generic Watch/Clock
 
 static uint8_t s_hidd_service_uuid128[] = {
     0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80,
     0x00, 0x10, 0x00, 0x00, 0x12, 0x18, 0x00, 0x00,
+};
+
+static uint8_t s_cts_service_uuid128[] = {
+    0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80,
+    0x00, 0x10, 0x00, 0x00, 0x05, 0x18, 0x00, 0x00,
 };
 
 static esp_ble_adv_data_t s_adv_data = {
@@ -53,12 +61,27 @@ static esp_ble_adv_params_t s_adv_params = {
     .adv_filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY,
 };
 
+static void configure_advertising_profile() {
+    if (s_time_sync_mode) {
+        esp_ble_gap_set_device_name("StickS3-Time");
+        s_adv_data.appearance = kGenericAppearance;
+        s_adv_data.service_uuid_len = sizeof(s_cts_service_uuid128);
+        s_adv_data.p_service_uuid = s_cts_service_uuid128;
+    } else {
+        esp_ble_gap_set_device_name("StickS3 AirMouse");
+        s_adv_data.appearance = kMouseAppearance;
+        s_adv_data.service_uuid_len = sizeof(s_hidd_service_uuid128);
+        s_adv_data.p_service_uuid = s_hidd_service_uuid128;
+    }
+    esp_ble_gap_config_adv_data(&s_adv_data);
+}
+
 static void hidd_event_cb(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param) {
     switch (event) {
         case ESP_HIDD_EVENT_REG_FINISH:
             if (param->init_finish.state == ESP_HIDD_INIT_OK) {
-                esp_ble_gap_set_device_name("StickS3 AirMouse");
-                esp_ble_gap_config_adv_data(&s_adv_data);
+                s_reg_done = true;
+                configure_advertising_profile();
             }
             break;
         case ESP_HIDD_EVENT_BLE_CONNECT:
@@ -92,14 +115,8 @@ static void gap_event_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *p
     }
 }
 
-bool airmouse_ble_start() {
-    s_want_adv = true;
-    if (s_ble_inited) {
-        if (!s_connected) {
-            esp_ble_gap_start_advertising(&s_adv_params);
-        }
-        return true;
-    }
+static bool ensure_ble_stack_inited() {
+    if (s_ble_inited) return true;
 
     if (!s_bt_mem_released) {
         esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
@@ -139,18 +156,50 @@ bool airmouse_ble_start() {
     return true;
 }
 
+bool airmouse_ble_start() {
+    s_time_sync_mode = false;
+    s_want_adv = true;
+    if (!ensure_ble_stack_inited()) return false;
+    if (s_reg_done) {
+        if (!s_connected) {
+            esp_ble_gap_stop_advertising();
+            configure_advertising_profile();
+        }
+    }
+    return true;
+}
+
 void airmouse_ble_stop() {
     s_want_adv = false;
     if (!s_ble_inited) return;
 
     if (s_connected) {
-        // Release any held mouse buttons before disconnecting
         esp_hidd_send_mouse_wheel(s_conn_id, 0, 0, 0, 0);
         esp_ble_gap_disconnect(s_remote_bda);
         s_connected = false;
     } else {
         esp_ble_gap_stop_advertising();
     }
+}
+
+bool airmouse_ble_start_time_sync(void (*on_time_write)(const uint8_t *data, uint16_t len)) {
+    esp_hidd_set_time_write_cb(on_time_write);
+    s_time_sync_mode = true;
+    s_want_adv = true;
+    if (!ensure_ble_stack_inited()) return false;
+    if (s_reg_done) {
+        if (!s_connected) {
+            esp_ble_gap_stop_advertising();
+            configure_advertising_profile();
+        }
+    }
+    return true;
+}
+
+void airmouse_ble_stop_time_sync() {
+    esp_hidd_set_time_write_cb(nullptr);
+    s_time_sync_mode = false;
+    airmouse_ble_stop();
 }
 
 bool airmouse_ble_is_connected() {

@@ -318,6 +318,35 @@ static const esp_gatts_attr_db_t bas_att_db[BAS_IDX_NB] =
                                                         sizeof(struct prf_char_pres_fmt), 0, NULL}},
 };
 
+enum {
+    CTS_IDX_SVC = 0,
+    CTS_IDX_TIME_CHAR,
+    CTS_IDX_TIME_VAL,
+    CTS_IDX_NB,
+};
+
+static const uint16_t cts_svc_uuid = 0x1805;       // Current Time Service
+static const uint16_t cts_curr_time_uuid = 0x2A2B; // Current Time Characteristic
+static uint8_t s_cts_time_val[32] = {0};
+static uint16_t s_cts_time_hdl = 0;
+static esp_hidd_time_write_cb_t s_time_write_cb = NULL;
+
+static const esp_gatts_attr_db_t cts_att_db[CTS_IDX_NB] =
+{
+    [CTS_IDX_SVC] = {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&primary_service_uuid, ESP_GATT_PERM_READ,
+                                           sizeof(uint16_t), sizeof(cts_svc_uuid), (uint8_t *)&cts_svc_uuid}},
+    [CTS_IDX_TIME_CHAR] = {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_declaration_uuid, ESP_GATT_PERM_READ,
+                                                 CHAR_DECLARATION_SIZE, CHAR_DECLARATION_SIZE, (uint8_t *)&char_prop_read_write}},
+    [CTS_IDX_TIME_VAL] = {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&cts_curr_time_uuid,
+                                                ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
+                                                sizeof(s_cts_time_val), 10, s_cts_time_val}},
+};
+
+void esp_hidd_set_time_write_cb(esp_hidd_time_write_cb_t cb)
+{
+    s_time_write_cb = cb;
+}
+
 
 /// Full Hid device Database Description - Used to add attributes into the database
 static esp_gatts_attr_db_t hidd_le_gatt_db[HIDD_LE_IDX_NB] =
@@ -588,6 +617,11 @@ void esp_hidd_prf_cb_hdl(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if,
             break;
         case ESP_GATTS_WRITE_EVT: {
             esp_hidd_cb_param_t cb_param = {0};
+            if (s_cts_time_hdl != 0 && param->write.handle == s_cts_time_hdl) {
+                if (s_time_write_cb != NULL && param->write.len > 0) {
+                    s_time_write_cb(param->write.value, param->write.len);
+                }
+            }
             if (param->write.handle == hidd_le_env.hidd_inst.att_tbl[HIDD_LE_IDX_REPORT_LED_OUT_VAL]) {
                 cb_param.led_write.conn_id = param->write.conn_id;
                 cb_param.led_write.report_id = HID_RPT_ID_LED_OUT;
@@ -617,15 +651,20 @@ void esp_hidd_prf_cb_hdl(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if,
                 ESP_LOGI(HID_LE_PRF_TAG, "%s(), start added the hid service to the stack database. incl_handle = %d",
                            __func__, incl_svc.start_hdl);
                 esp_ble_gatts_create_attr_tab(hidd_le_gatt_db, gatts_if, HIDD_LE_IDX_NB, 0);
-            }
-            if (param->add_attr_tab.num_handle == HIDD_LE_IDX_NB &&
+            } else if (param->add_attr_tab.num_handle == HIDD_LE_IDX_NB &&
                 param->add_attr_tab.status == ESP_GATT_OK) {
                 memcpy(hidd_le_env.hidd_inst.att_tbl, param->add_attr_tab.handles,
                             HIDD_LE_IDX_NB*sizeof(uint16_t));
                 ESP_LOGI(HID_LE_PRF_TAG, "hid svc handle = %x",hidd_le_env.hidd_inst.att_tbl[HIDD_LE_IDX_SVC]);
                 hid_add_id_tbl();
-		        esp_ble_gatts_start_service(hidd_le_env.hidd_inst.att_tbl[HIDD_LE_IDX_SVC]);
-            } else {
+                esp_ble_gatts_start_service(hidd_le_env.hidd_inst.att_tbl[HIDD_LE_IDX_SVC]);
+                esp_ble_gatts_create_attr_tab(cts_att_db, gatts_if, CTS_IDX_NB, 0);
+            } else if (param->add_attr_tab.num_handle == CTS_IDX_NB &&
+                param->add_attr_tab.svc_uuid.uuid.uuid16 == 0x1805 &&
+                param->add_attr_tab.status == ESP_GATT_OK) {
+                s_cts_time_hdl = param->add_attr_tab.handles[CTS_IDX_TIME_VAL];
+                esp_ble_gatts_start_service(param->add_attr_tab.handles[CTS_IDX_SVC]);
+            } else if (param->add_attr_tab.status == ESP_GATT_OK) {
                 esp_ble_gatts_start_service(param->add_attr_tab.handles[0]);
             }
             break;
