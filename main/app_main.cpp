@@ -6,22 +6,23 @@
 #include "app_settings.h"
 #include "imu_cal.h"
 #include "input_util.h"
+#include "ir/ir_ui.h"
 #include "power_save.h"
 #include "sound_fx.h"
 #include "settings_ui.h"
 #include "time_sync.h"
 #include "ui_common.h"
+#include "ui_menu.h"
 #include "airmouse/airmouse_ui.h"
 #include "air_harp/air_harp_ui.h"
 #include "timer/ems_timer_ui.h"
 #include "timer/simple_timer_ui.h"
 
-#include <algorithm>
 #include <ctime>
 
 static const char *TAG = "sticks3_app";
 
-enum class HomeItem { Timer, BleMouse, UsbMouse, AirHarp, Settings, Count };
+enum class HomeItem { Timer, BleMouse, UsbMouse, AirHarp, IrRemote, Settings, Count };
 constexpr int kHomeItemCount = static_cast<int>(HomeItem::Count);
 
 static void draw_sync_icon(M5Canvas &canvas, BootTimeSync source, uint32_t color) {
@@ -39,8 +40,7 @@ static void draw_sync_icon(M5Canvas &canvas, BootTimeSync source, uint32_t color
     }
 }
 
-static void draw_home_screen(M5Canvas &canvas, int sel, int64_t now_ms) {
-    int w = canvas.width();
+static void draw_home_screen(M5Canvas &canvas, const MenuCursor &cursor, int64_t now_ms) {
     bool ems_run = ems_timer_is_running();
     const auto alarms = ems_timer_active_alarms();
     const bool ems_alarm = alarms.any();
@@ -80,93 +80,20 @@ static void draw_home_screen(M5Canvas &canvas, int sel, int64_t now_ms) {
                    badge, badge_bg, badge_fg, show_sync ? 21 : 4);
     if (show_sync) draw_sync_icon(canvas, sync, 0x80D8FF);
 
-    // Alternate the card backgrounds and round the outer corners of the stack.
-    struct MenuCard {
-        const char *title;
-        const char *sub;
-        uint32_t accent;
-    };
     const bool simple_mode = (g_settings.timer_mode == 0);
-    const MenuCard cards[kHomeItemCount] = {
+    const MenuRow rows[kHomeItemCount] = {
         {simple_mode ? "SIMPLE TIMER" : "EMS TIMER",
          simple_mode ? "7-Color Stamp" : "EPI / Vital / Log",
          0xFF5252},
         {"BLE MOUSE", "Bluetooth Gyro", 0x29B6F6},
         {"USB MOUSE", "USB-C HID Gyro", 0x00BFA5},
         {"AIR HARP",  "Pitch / Volume", 0xC393FF},
+        {"IR REMOTE", "Learn / Send", 0xFF946A},
         {"SETTINGS",  "Bright/Cal/Time", 0xFFB300},
     };
 
-    constexpr int kBoardX = 2;
-    const int kBoardW = w - 4;
-    constexpr int kTopY = 24;
-    const int kTileH = (canvas.height() - 29 - kTopY) / kHomeItemCount;
-    constexpr int kLast = kHomeItemCount - 1;
-    constexpr int kRad = 7;
-
-    for (int i = 0; i < kHomeItemCount; i++) {
-        int y = kTopY + i * kTileH;
-        bool is_even = (i % 2 == 0);
-        bool is_sel = (i == sel);
-
-        // True inverted checkerboard colors
-        uint32_t bg = is_even ? (is_sel ? 0x142030 : 0x0B1018)
-                              : (is_sel ? 0xDCEEFF : 0xF1F5F9);
-        uint32_t fg = is_even ? 0xFFFFFF : 0x0B1018;
-        uint32_t sub_fg = is_even ? 0xA8BED6 : 0x334155;
-
-        if (i == 0) {
-            // Rounded top corners only, flat bottom seam
-            canvas.fillRoundRect(kBoardX, y, kBoardW, kTileH, kRad, bg);
-            canvas.fillRect(kBoardX, y + kTileH - kRad, kBoardW, kRad, bg);
-        } else if (i == kLast) {
-            // Flat top seam, rounded bottom corners only
-            canvas.fillRoundRect(kBoardX, y, kBoardW, kTileH, kRad, bg);
-            canvas.fillRect(kBoardX, y, kBoardW, kRad, bg);
-        } else {
-            // Square inner checkerboard rows touching cleanly with 0 gap
-            canvas.fillRect(kBoardX, y, kBoardW, kTileH, bg);
-        }
-
-        if (is_sel) {
-            // Selection indicator bar on left + crisp accent outline (strictly clipped to tile bounds)
-            uint32_t acc = cards[i].accent;
-            canvas.setClipRect(kBoardX, y, kBoardW, kTileH);
-            if (i == 0) {
-                canvas.fillRoundRect(kBoardX, y, 8, kTileH + kRad, kRad, acc);
-                canvas.drawRoundRect(kBoardX, y, kBoardW, kTileH + kRad, kRad, acc);
-                canvas.drawRoundRect(kBoardX + 1, y + 1, kBoardW - 2, kTileH + kRad - 2, kRad - 1, acc);
-                canvas.fillRect(kBoardX, y + kTileH - 2, kBoardW, 2, acc);
-            } else if (i == kLast) {
-                canvas.fillRoundRect(kBoardX, y - kRad, 8, kTileH + kRad, kRad, acc);
-                canvas.drawRoundRect(kBoardX, y - kRad, kBoardW, kTileH + kRad, kRad, acc);
-                canvas.drawRoundRect(kBoardX + 1, y - kRad + 1, kBoardW - 2, kTileH + kRad - 2, kRad - 1, acc);
-                canvas.fillRect(kBoardX, y, kBoardW, 2, acc);
-            } else {
-                canvas.fillRect(kBoardX, y, 8, kTileH, acc);
-                canvas.drawRect(kBoardX, y, kBoardW, kTileH, acc);
-                canvas.drawRect(kBoardX + 1, y + 1, kBoardW - 2, kTileH - 2, acc);
-            }
-            canvas.clearClipRect();
-        }
-
-        const int tx = kBoardX + 11;
-        canvas.setTextWrap(false);
-        canvas.setFont(&fonts::FreeSansBold9pt7b);
-        canvas.setTextSize(1);
-        const int title_width = canvas.textWidth(cards[i].title);
-        const float title_scale = std::min(1.0f, static_cast<float>(w - tx - 5) / title_width);
-        canvas.setTextSize(title_scale, 1.0f);
-        canvas.setTextColor(fg, bg);
-        canvas.drawString(cards[i].title, tx, y + 1);
-
-        canvas.setFont(&fonts::Font2);
-        canvas.setTextSize(1);
-        canvas.setTextColor(sub_fg, bg);
-        canvas.drawString(cards[i].sub, tx, y + 19);
-    }
-
-    ui_draw_footer2(canvas, "A: Next    B: Open", "Hold A: Mute Tone");
+    ui_draw_menu(canvas, rows, kHomeItemCount, cursor);
+    ui_draw_footer2(canvas, "A Next   B Open", "A+B Prev  Hold A Mute");
     ui_present(canvas);
 }
 
@@ -203,37 +130,28 @@ extern "C" void app_main(void) {
     M5Canvas canvas(&M5.Display);
     canvas.createSprite(M5.Display.width(), M5.Display.height());
 
-    int sel = 0;
-    bool a_was_down = false;
-    bool a_long_fired = false;
-    int64_t a_down_ms = 0;
+    MenuCursor cursor;
+    MenuButtons buttons;
     int64_t last_draw_ms = 0;
 
     while (true) {
         input_update();
-        int64_t now_ms = input_now_ms();
-        bool a_down = input_a_down();
+        const int64_t now_ms = input_now_ms();
+        const auto action = buttons.update(input_a_down(), input_b_down(), now_ms, true);
 
-        if (a_down && !a_was_down) {
-            a_down_ms = now_ms;
-            a_long_fired = false;
-        } else if (a_down && a_was_down && !a_long_fired && (now_ms - a_down_ms) >= 650) {
-            a_long_fired = true;
+        if (action == MenuAction::Mute) {
             g_settings.sound_muted = !g_settings.sound_muted;
             sound_fx_apply_volume();
             app_settings_save();
             sound_fx_click();
             last_draw_ms = 0;
-        } else if (!a_down && a_was_down && !a_long_fired) {
-            sel = (sel + 1) % kHomeItemCount;
+        } else if (action == MenuAction::Next || action == MenuAction::Previous) {
+            cursor.move(action == MenuAction::Next ? 1 : -1, kHomeItemCount);
             sound_fx_click();
             last_draw_ms = 0;
-        }
-        a_was_down = a_down;
-
-        if (input_b_pressed()) {
-            const auto item = static_cast<HomeItem>(sel);
-            if (item != HomeItem::AirHarp) sound_fx_confirm();
+        } else if (action == MenuAction::Select) {
+            const auto item = static_cast<HomeItem>(cursor.selected);
+            if (item != HomeItem::AirHarp && item != HomeItem::IrRemote) sound_fx_confirm();
             canvas.deleteSprite();
             switch (item) {
                 case HomeItem::Timer:
@@ -243,18 +161,19 @@ extern "C" void app_main(void) {
                 case HomeItem::BleMouse: airmouse_ui_run(AirMouseTransport::Ble); break;
                 case HomeItem::UsbMouse: airmouse_ui_run(AirMouseTransport::Usb); break;
                 case HomeItem::AirHarp: air_harp_ui_run(); break;
+                case HomeItem::IrRemote: ir_ui_run(); break;
                 case HomeItem::Settings: settings_ui_run(); break;
                 case HomeItem::Count: break;
             }
             canvas.createSprite(M5.Display.width(), M5.Display.height());
             input_wait_all_release();
-            a_was_down = false;
+            buttons = {};
             last_draw_ms = 0;
         }
 
-        if (ui_screen_is_on() && (now_ms - last_draw_ms) >= 200) {
+        if (ui_screen_is_on() && (last_draw_ms == 0 || now_ms - last_draw_ms >= 200)) {
             last_draw_ms = now_ms;
-            draw_home_screen(canvas, sel, now_ms);
+            draw_home_screen(canvas, cursor, now_ms);
         }
 
         input_idle_delay(25);

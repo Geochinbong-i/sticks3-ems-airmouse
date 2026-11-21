@@ -23,6 +23,8 @@ std::atomic<bool> s_stop_requested{false};
 std::atomic<unsigned> s_pending_alarms{0};
 std::atomic<unsigned> s_requested_harp{0};
 std::atomic<uint8_t> s_volume{0};
+std::atomic<bool> s_ir_listening{false};
+std::atomic<bool> s_ir_ready{false};
 constexpr unsigned kEpiAlarm = 1;
 constexpr unsigned kPresetAlarm = 2;
 constexpr int kHarpChannel = 0;
@@ -146,12 +148,19 @@ void sound_task(void *) {
 
         const unsigned alarm = take_alarm();
         if (alarm != 0) {
+            s_ir_ready.store(false);
             play_alarm(alarm, volume);
             continue;
         }
 
+        const bool ir_quiet = s_ir_listening.load();
+        if (ir_quiet) {
+            s_harp.stop();
+            if (M5.Speaker.isRunning()) M5.Speaker.end();
+            s_ir_ready.store(true);
+        }
         const unsigned requested = s_requested_harp.load();
-        const unsigned voice = requested != 0 && volume != 0 && !ems_timer_active_alarms().any()
+        const unsigned voice = !ir_quiet && requested != 0 && volume != 0 && !ems_timer_active_alarms().any()
                              ? requested : 0;
         const bool changing_harp = s_harp.update(voice, esp_timer_get_time() / 1000);
         const bool check_idle_speaker = !s_harp.playing() && M5.Speaker.isRunning();
@@ -164,7 +173,7 @@ void sound_task(void *) {
             if (!changing_harp && check_idle_speaker && !M5.Speaker.isPlaying()) M5.Speaker.end();
             continue;
         }
-        if (cue == SoundCue::Wake || !M5.Speaker.isEnabled()) continue;
+        if (cue == SoundCue::Wake || s_ir_listening.load() || !M5.Speaker.isEnabled()) continue;
         if (volume == 0 || s_stop_requested.load() || s_pending_alarms.load()) continue;
 
         switch (cue) {
@@ -240,4 +249,14 @@ void sound_fx_harp_play(uint8_t note, uint8_t volume_pct) {
 
 void sound_fx_harp_stop() {
     if (s_requested_harp.exchange(0) != 0) wake_sound_task();
+}
+
+void sound_fx_set_ir_listening(bool enabled) {
+    s_ir_ready.store(false);
+    s_ir_listening.store(enabled);
+    wake_sound_task();
+}
+
+bool sound_fx_ir_ready() {
+    return !s_queue || s_ir_ready.load();
 }

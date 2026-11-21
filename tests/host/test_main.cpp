@@ -3,6 +3,8 @@
 #include "timer/simple_timer_core.h"
 #include "airmouse/airmouse_math.h"
 #include "air_harp/air_harp_core.h"
+#include "ir/ir_signal.h"
+#include "menu_nav.h"
 #include "time_sync_parse.h"
 
 #include <cassert>
@@ -418,6 +420,69 @@ static void test_time_sync_parsing() {
     assert(!url_decode_inplace(incomplete_escape));
 }
 
+static void test_menu_scroll_and_chords() {
+    MenuCursor cursor;
+    for (int i = 0; i < 4; ++i) cursor.move(1, 6);
+    assert(cursor.selected == 4 && cursor.top == 1);
+    cursor.move(1, 6);
+    assert(cursor.selected == 5 && cursor.top == 2);
+    cursor.move(1, 6);
+    assert(cursor.selected == 0 && cursor.top == 0);
+    cursor.move(-1, 6);
+    assert(cursor.selected == 5 && cursor.top == 2);
+
+    MenuButtons buttons;
+    assert(buttons.update(false, true, 10, true) == MenuAction::None);
+    assert(buttons.update(true, true, 35, true) == MenuAction::None);
+    assert(buttons.update(true, false, 80, true) == MenuAction::None);
+    assert(buttons.update(false, false, 100, true) == MenuAction::Previous);
+    assert(buttons.update(false, true, 110, true) == MenuAction::None);
+    assert(buttons.update(false, false, 130, true) == MenuAction::Select);
+    assert(buttons.update(true, false, 200, true) == MenuAction::None);
+    assert(buttons.update(true, false, 850, true) == MenuAction::Mute);
+    assert(buttons.update(false, false, 900, true) == MenuAction::None);
+    assert(buttons.update(true, true, 1000, false) == MenuAction::None);
+    assert(buttons.update(true, true, 1600, false) == MenuAction::Back);
+    assert(buttons.update(false, true, 1650, false) == MenuAction::None);
+    assert(buttons.update(false, false, 1700, false) == MenuAction::None);
+}
+
+static void test_ir_signal_learning() {
+    IrSignal frame;
+    assert(ir_add_pulse(frame, false, 400));
+    assert(frame.count == 0);
+    assert(ir_add_pulse(frame, true, 4500));
+    assert(ir_add_pulse(frame, true, 4500));
+    assert(ir_add_pulse(frame, false, 4500));
+    constexpr uint32_t bits = 0xBA45FF00u;
+    for (unsigned i = 0; i < 32; ++i) {
+        assert(ir_add_pulse(frame, true, 560));
+        assert(ir_add_pulse(frame, false, ((bits >> i) & 1) ? 1690 : 560));
+    }
+    assert(ir_add_pulse(frame, true, 560));
+    assert(ir_add_pulse(frame, false, kIrSignalGapUs));
+    assert(ir_finish_signal(frame));
+    assert(frame.count == 67 && frame.duration_us[0] == 9000 && ir_is_nec(frame));
+    const auto first_space = frame.duration_us[3 + 24 * 2];
+    frame.duration_us[3 + 24 * 2] = first_space == 560 ? 1690 : 560;
+    assert(ir_valid_signal(frame) && !ir_is_nec(frame));
+
+    IrSignal repeat;
+    assert(ir_add_pulse(repeat, true, 9000));
+    assert(ir_add_pulse(repeat, false, 2250));
+    assert(ir_add_pulse(repeat, true, 560));
+    assert(!ir_finish_signal(repeat));
+    frame.duration_us[2] = 10;
+    assert(!ir_valid_signal(frame));
+
+    IrSignal full;
+    for (size_t i = 0; i < kIrMaxPulses; ++i) {
+        assert(ir_add_pulse(full, (i % 2) == 0, 400));
+    }
+    assert(ir_valid_signal(full));
+    assert(!ir_add_pulse(full, false, 400));
+}
+
 int main() {
     test_ems_timer_stopwatch_and_pause();
     test_ems_timer_epi_interval_and_overdue();
@@ -429,6 +494,8 @@ int main() {
     test_gyro_flip_180();
     test_airmouse_button_guard();
     test_air_harp_continuous_controls();
+    test_menu_scroll_and_chords();
+    test_ir_signal_learning();
     test_time_sync_parsing();
     std::printf("ALL HOST TESTS PASSED\n");
     return 0;

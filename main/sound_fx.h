@@ -11,3 +11,6 @@ void sound_fx_alarms(bool epi, bool preset);
 void sound_fx_stop();
 void sound_fx_harp_play(uint8_t note, uint8_t volume_pct);
 void sound_fx_harp_stop();
+
+void sound_fx_set_ir_listening(bool enabled);
+bool sound_fx_ir_ready();

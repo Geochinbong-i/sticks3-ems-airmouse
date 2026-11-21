@@ -7,6 +7,7 @@ idf_component_register(
         "input_util.cpp"
         "power_save.cpp"
         "ui_common.cpp"
+        "ui_menu.cpp"
         "imu_cal.cpp"
         "time_sync.cpp"
         "time_sync_parse.cpp"
@@ -20,6 +21,10 @@ idf_component_register(
         "airmouse/airmouse_ui.cpp"
         "air_harp/air_harp_core.cpp"
         "air_harp/air_harp_ui.cpp"
+        "ir/ir_signal.cpp"
+        "ir/ir_store.cpp"
+        "ir/ir_device.cpp"
+        "ir/ir_ui.cpp"
         "ble_hid/hid_dev.c"
         "ble_hid/hid_device_le_prf.c"
         "ble_hid/esp_hidd_prf_api.c"
@@ -39,6 +44,7 @@ idf_component_register(
         esp_psram
         esp_pm
         driver
+        esp_driver_rmt
         lwip
 )
 
