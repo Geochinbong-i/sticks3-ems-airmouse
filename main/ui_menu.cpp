@@ -1,4 +1,5 @@
 #include "ui_menu.h"
+#include "ui_theme.h"
 
 #include <algorithm>
 
@@ -9,7 +10,8 @@ void ui_draw_menu(M5Canvas &canvas, const MenuRow *rows, int count, const MenuCu
     constexpr int kX = 2;
     const int width = canvas.width() - 2 * kX;
     const int height = (footer - 11 - kTop) / kMenuVisibleRows;
-    constexpr uint32_t arrow = 0x80D8FF;
+    const auto &theme = ui_theme();
+    const uint32_t arrow = theme.accent;
     if (cursor.top > 0) canvas.fillTriangle(center, 25, center - 4, 29, center + 4, 29, arrow);
     if (cursor.top + kMenuVisibleRows < count) {
         canvas.fillTriangle(center - 4, footer - 8, center + 4, footer - 8, center, footer - 4, arrow);
@@ -21,12 +23,12 @@ void ui_draw_menu(M5Canvas &canvas, const MenuRow *rows, int count, const MenuCu
         const int index = cursor.top + visible;
         const auto &row = rows[index];
         const int y = kTop + visible * height;
-        const bool light = index % 2 != 0;
-        const uint32_t bg = light ? 0xF1F5F9 : 0x0B1018;
+        const uint32_t bg = index % 2 == 0 ? theme.surface : theme.alternate;
         canvas.fillRect(kX, y, width, height, bg);
         if (index == cursor.selected) {
-            canvas.drawRect(kX, y, width, height, row.accent);
-            canvas.fillTriangle(kX + 1, y + 1, kX + 12, y + 1, kX + 1, y + 12, row.accent);
+            const uint32_t accent = g_settings.light_theme ? theme.accent : row.accent;
+            canvas.drawRect(kX, y, width, height, accent);
+            canvas.fillTriangle(kX + 1, y + 1, kX + 12, y + 1, kX + 1, y + 12, accent);
         }
 
         constexpr int text_x = kX + 9;
@@ -36,12 +38,12 @@ void ui_draw_menu(M5Canvas &canvas, const MenuRow *rows, int count, const MenuCu
         const float scale = text_w > 0
             ? std::min(1.0f, static_cast<float>(canvas.width() - text_x - 5) / text_w) : 1.0f;
         canvas.setTextSize(scale, 1.0f);
-        canvas.setTextColor(light ? 0x0B1018 : 0xFFFFFF);
+        canvas.setTextColor(theme.text);
         canvas.drawString(row.title, text_x, y + 7);
 
         canvas.setFont(&fonts::Font2);
         canvas.setTextSize(1);
-        canvas.setTextColor(light ? 0x334155 : 0xA8BED6);
+        canvas.setTextColor(theme.muted);
         canvas.drawString(row.subtitle, text_x, y + 23);
     }
 }

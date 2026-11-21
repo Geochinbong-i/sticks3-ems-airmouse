@@ -10,20 +10,32 @@ enum class EmsState : uint8_t {
 };
 
 enum class EmsEventType : uint8_t {
-    Start = 0,
+    CaseStart = 0,
     Epi = 1,
     Shock = 2,
     Rosc = 3,
     Vital = 4,
     Airway = 5,
-    Pause = 6,
-    Resume = 7,
+    TimerPause = 6,
+    TimerResume = 7,
+    CprStart,
+    RhythmVf,
+    RhythmPvt,
+    RhythmPea,
+    RhythmAsystole,
+    Amiodarone,
+    Lidocaine,
+    IvAccess,
+    IoAccess,
+    Capnography,
+    Handoff,
+    Rearrest,
 };
 
 struct EmsEvent {
-    uint32_t at_sec;
+    int64_t elapsed_ms;
     EmsEventType type;
-    uint8_t seq;
+    uint16_t seq;
     char label[16];
 };
 
@@ -35,13 +47,13 @@ struct EmsTickResult {
 
 class EmsTimerCore {
 public:
-    static constexpr size_t kMaxEvents = 32;
+    static constexpr size_t kMaxEvents = 64;
     static constexpr int kPresetCount = 7;
 
     EmsTimerCore();
 
     void reset();
-    void start(int64_t now_ms);
+    void start(int64_t now_ms, int64_t utc_ms = 0);
     void pause(int64_t now_ms);
     void resume(int64_t now_ms);
     void toggle_pause(int64_t now_ms);
@@ -64,6 +76,8 @@ public:
 
     EmsState state() const { return state_; }
     int64_t total_elapsed_ms(int64_t now_ms) const;
+    void sync_clock(int64_t now_ms, int64_t utc_ms);
+    int64_t case_start_utc_ms() const { return case_start_utc_ms_; }
 
     bool epi_active() const { return epi_dose_count_ > 0; }
     int epi_dose_count() const { return epi_dose_count_; }
@@ -84,12 +98,14 @@ public:
     static void format_hh_mm_ss(int64_t ms, char *buf, size_t len);
 
 private:
-    void add_event(EmsEventType type, uint8_t seq, uint32_t at_sec);
+    void add_event(EmsEventType type, uint16_t seq, int64_t now_ms);
     int64_t active_elapsed_since(int64_t anchor_ms, int64_t now_ms) const;
 
     EmsState state_ = EmsState::Idle;
     int64_t total_accum_ms_ = 0;
     int64_t run_started_ms_ = 0;
+    int64_t case_started_ms_ = 0;
+    int64_t case_start_utc_ms_ = 0;
 
     int epi_interval_sec_ = 180; // default 3 min
     int epi_dose_count_ = 0;
@@ -108,4 +124,5 @@ private:
 
     EmsEvent events_[kMaxEvents]{};
     size_t event_count_ = 0;
+    size_t next_event_ = 0;
 };

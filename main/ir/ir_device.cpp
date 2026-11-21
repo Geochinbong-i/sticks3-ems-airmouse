@@ -3,6 +3,7 @@
 #include "M5Unified.h"
 #include "esp_attr.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/task.h"
 
 #include <array>
@@ -12,6 +13,8 @@ constexpr char kTag[] = "ir_remote";
 constexpr gpio_num_t kReceivePin = GPIO_NUM_42;
 constexpr gpio_num_t kSendPin = GPIO_NUM_46;
 constexpr unsigned kResolutionHz = 1000000;
+constexpr int64_t kHighPowerSpacingUs = 500000;
+int64_t s_next_high_power_us = 0;
 
 // Only the IR screen owns these buffers. RMT uses them until the transaction completes.
 std::array<rmt_symbol_word_t, 256> s_rx_symbols{};
@@ -35,10 +38,19 @@ bool check(esp_err_t result, const char *step) {
     ESP_LOGW(kTag, "%s: %s", step, esp_err_to_name(result));
     return false;
 }
+
+bool apply_carrier(rmt_channel_handle_t tx, bool high_power) {
+    rmt_carrier_config_t carrier{};
+    carrier.frequency_hz = kIrTxCarrierHz;
+    // The board fixes the LED peak current. Increase only the carrier's on-time.
+    carrier.duty_cycle = high_power ? 0.50f : 0.33f;
+    return check(rmt_apply_carrier(tx, &carrier), "TX carrier");
+}
 } // namespace
 
-bool IrDevice::open() {
+bool IrDevice::open(bool high_power) {
     if (M5.getBoard() != m5::board_t::board_M5StickS3) return false;
+    high_power_ = high_power;
     events_ = xQueueCreate(1, sizeof(size_t));
     if (!events_) return false;
 
@@ -65,10 +77,7 @@ bool IrDevice::open() {
     tx_callbacks.on_trans_done = send_done;
     if (!check(rmt_tx_register_event_callbacks(tx_, &tx_callbacks, events_), "TX callback")) return false;
 
-    rmt_carrier_config_t carrier{};
-    carrier.frequency_hz = kIrTxCarrierHz;
-    carrier.duty_cycle = 0.33f;
-    if (!check(rmt_apply_carrier(tx_, &carrier), "TX carrier")) return false;
+    if (!apply_carrier(tx_, false)) return false;
     rmt_copy_encoder_config_t copy{};
     if (!check(rmt_new_copy_encoder(&copy, &encoder_), "TX encoder")) return false;
     tx_enabled_ = check(rmt_enable(tx_), "TX enable");
@@ -137,6 +146,14 @@ bool IrDevice::send(const IrSignal &signal) {
     cancel_receive();
     xQueueReset(events_);
 
+    // Keep boosted bursts close to the LED on-time of a single remote-control frame.
+    const int64_t now_us = esp_timer_get_time();
+    const bool high = high_power_ && now_us >= s_next_high_power_us && ir_supports_high_power(signal);
+    if (high != carrier_high_) {
+        if (!apply_carrier(tx_, high)) return false;
+        carrier_high_ = high;
+    }
+
     const size_t count = (signal.count + 1) / 2;
     for (size_t i = 0; i < count; ++i) {
         const size_t pulse = i * 2;
@@ -148,8 +165,10 @@ bool IrDevice::send(const IrSignal &signal) {
     }
 
     rmt_transmit_config_t config{};
-    return check(rmt_transmit(tx_, encoder_, s_tx_symbols.data(),
-                              count * sizeof(rmt_symbol_word_t), &config), "TX start");
+    if (!check(rmt_transmit(tx_, encoder_, s_tx_symbols.data(),
+                            count * sizeof(rmt_symbol_word_t), &config), "TX start")) return false;
+    if (high) s_next_high_power_us = now_us + kHighPowerSpacingUs;
+    return true;
 }
 
 bool IrDevice::sending_done() {

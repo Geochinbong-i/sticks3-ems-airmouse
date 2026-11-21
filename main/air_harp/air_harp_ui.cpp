@@ -7,16 +7,13 @@
 #include "sound_fx.h"
 #include "timer/ems_timer_ui.h"
 #include "ui_common.h"
+#include "ui_theme.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 
 namespace {
-
-constexpr uint32_t kBackground = 0x090D14;
-constexpr uint32_t kPanel = 0x171D2C;
-constexpr uint32_t kIdleColor = 0xA8B8D3;
 
 struct NeutralSamples {
     float ax = 0, ay = 0, az = 0;
@@ -61,15 +58,15 @@ enum class HarpStatus { NoImu, Centering, Ready, Silent, Playing };
 
 void draw_background(M5Canvas &canvas) {
     const int w = canvas.width();
-    canvas.fillScreen(kBackground);
-    canvas.fillRoundRect(5, 54, w - 10, 54, 5, kPanel);
-    canvas.fillRoundRect(5, 115, w - 10, 54, 5, kPanel);
+    canvas.fillScreen(ui_theme().background);
+    canvas.fillRoundRect(5, 54, w - 10, 54, 5, ui_theme().surface);
+    canvas.fillRoundRect(5, 115, w - 10, 54, 5, ui_theme().surface);
     canvas.setTextWrap(false);
     canvas.setFont(&fonts::Font2);
-    canvas.setTextColor(kIdleColor);
+    canvas.setTextColor(ui_theme().muted);
     canvas.drawCentreString("PITCH  Left / Right", w / 2, 58);
     canvas.drawCentreString("VOLUME  Up / Down", w / 2, 119);
-    ui_draw_footer2(canvas, g_settings.harp_toggle ? "A: Toggle  B: Center" : "Hold A   B: Center",
+    ui_draw_themed_footer(canvas, g_settings.harp_toggle ? "A: Toggle  B: Center" : "Hold A   B: Center",
                     "Hold A+B : Go Home");
 }
 
@@ -82,16 +79,16 @@ void draw_status(M5Canvas &canvas, HarpStatus status) {
         case HarpStatus::Playing: text = "Playing"; break;
         case HarpStatus::Ready: break;
     }
-    canvas.fillRect(0, 25, canvas.width(), 25, kBackground);
+    canvas.fillRect(0, 25, canvas.width(), 25, ui_theme().background);
     canvas.setFont(&fonts::Font2);
-    canvas.setTextColor(kIdleColor);
+    canvas.setTextColor(ui_theme().muted);
     canvas.drawCentreString(text, canvas.width() / 2, 29);
 }
 
 void draw_note(M5Canvas &canvas, uint8_t note, uint32_t accent) {
     char label[4];
     air_harp_note_label(note, label);
-    canvas.fillRect(10, 75, canvas.width() - 20, 28, kPanel);
+    canvas.fillRect(10, 75, canvas.width() - 20, 28, ui_theme().surface);
     canvas.setFont(&fonts::FreeSansBold12pt7b);
     canvas.setTextColor(accent);
     canvas.drawCentreString(label, canvas.width() / 2, 76);
@@ -101,14 +98,14 @@ void draw_volume(M5Canvas &canvas, uint8_t volume_pct, uint32_t accent) {
     const int w = canvas.width();
     char label[8];
     std::snprintf(label, sizeof(label), "%u%%", static_cast<unsigned>(volume_pct));
-    canvas.fillRect(10, 136, w - 20, 28, kPanel);
+    canvas.fillRect(10, 136, w - 20, 28, ui_theme().surface);
     canvas.setFont(&fonts::FreeSansBold12pt7b);
     canvas.setTextColor(accent);
     canvas.drawCentreString(label, w / 2, 137);
 
     constexpr int kInset = 14;
     const int width = w - 2 * kInset;
-    canvas.fillRoundRect(kInset - 2, 178, width + 4, 14, 3, kPanel);
+    canvas.fillRoundRect(kInset - 2, 178, width + 4, 14, 3, ui_theme().surface);
     const int filled = (width * volume_pct + kAirHarpMaxVolumePct / 2) / kAirHarpMaxVolumePct;
     if (filled > 0) canvas.fillRect(kInset, 181, filled, 8, accent);
 }
@@ -216,11 +213,12 @@ void air_harp_ui_run() {
             const bool volume_changed = redraw_base || color_changed || voice.volume_pct != drawn_voice.volume_pct;
             const bool header_changed = redraw_base || now_ms >= next_header_ms ||
                                         alarms.epi != drawn_alarms.epi || alarms.preset != drawn_alarms.preset;
-            const uint32_t accent = status == HarpStatus::Playing ? 0x80EDC4 : kIdleColor;
+            const uint32_t accent = status == HarpStatus::Playing ? ui_theme().accent : ui_theme().muted;
             if (redraw_base) draw_background(canvas);
             if (header_changed) {
                 ui_draw_header(canvas, alarms.any() ? alarms.title() : "AIR HARP",
-                               alarms.any() ? 0xB71C1C : 0x2B1D46, 0xFFFFFF,
+                               alarms.any() ? 0xB71C1Cu : ui_theme().surface,
+                               alarms.any() ? 0xFFFFFFu : ui_theme().text,
                                g_settings.sound_muted && !alarms.any() ? "MUTE" : nullptr);
                 next_header_ms = now_ms + 2000;
             }

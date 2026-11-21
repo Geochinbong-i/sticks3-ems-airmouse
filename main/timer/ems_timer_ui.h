@@ -14,6 +14,7 @@ struct EmsAlarmState {
 };
 
 void ems_timer_init();
+void ems_timer_sync_clock();
 void ems_timer_ui_run();
 bool ems_timer_is_running();
 EmsAlarmState ems_timer_active_alarms();

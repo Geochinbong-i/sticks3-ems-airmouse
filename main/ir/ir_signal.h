@@ -19,3 +19,4 @@ bool ir_add_pulse(IrSignal &signal, bool mark, unsigned duration_us);
 bool ir_finish_signal(IrSignal &signal);
 bool ir_valid_signal(const IrSignal &signal);
 bool ir_is_nec(const IrSignal &signal);
+bool ir_supports_high_power(const IrSignal &signal);

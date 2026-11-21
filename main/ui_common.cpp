@@ -3,6 +3,10 @@
 #include "ems_timer_ui.h"
 #include "esp_timer.h"
 #include "power_save.h"
+#include "ui_theme.h"
+
+#include "driver/ledc.h"
+#include "esp_log.h"
 
 #include <cstdio>
 #include <cstring>
@@ -45,6 +49,22 @@ void ui_present(M5Canvas &canvas) {
     if (!s_screen_off) canvas.pushSprite(0, 0);
 }
 
+void ui_init_backlight() {
+    if (M5.getBoard() != m5::board_t::board_M5StickS3) return;
+
+    // M5GFX configures Stick S3's GPIO38 on LEDC channel 7 / timer 3 at 9 bits.
+    // Keep its brightness and panel sleep handling, and use a DFS-independent clock.
+    ledc_timer_config_t timer{};
+    timer.speed_mode = LEDC_LOW_SPEED_MODE;
+    timer.timer_num = LEDC_TIMER_3;
+    timer.duty_resolution = LEDC_TIMER_9_BIT;
+    timer.freq_hz = 5000;
+    timer.clk_cfg = LEDC_USE_XTAL_CLK;
+    const auto result = ledc_timer_config(&timer);
+    ESP_LOGI("display", "Stick S3 backlight PWM: %u Hz (XTAL setup: %s)",
+             (unsigned)ledc_get_freq(timer.speed_mode, timer.timer_num), esp_err_to_name(result));
+}
+
 void ui_apply_brightness() {
     int pct = g_settings.brightness_pct;
     if (pct < 20) pct = 20;
@@ -77,8 +97,12 @@ void ui_draw_battery_badge(M5Canvas &canvas, int right_x, int hdr_h, uint32_t bg
     int txt_x = right_x - txt_w;
     int txt_y = (hdr_h - 14) / 2;
 
-    uint32_t icon_col = charging ? 0x40C4FF : (batt <= 20 ? 0xFF5252 : 0x69F0AE);
-    uint32_t txt_col = charging ? 0x80D8FF : (batt <= 20 ? 0xFF8A80 : 0xFFFFFF);
+    const auto &theme = ui_theme();
+    const bool themed = bg_col == theme.surface || bg_col == theme.alternate;
+    const uint32_t txt_col = themed
+        ? (charging ? theme.accent : (batt <= 20 ? theme.danger : theme.text))
+        : (charging ? 0x80D8FF : (batt <= 20 ? 0xFF8A80 : 0xFFFFFF));
+    const uint32_t icon_col = txt_col;
 
     // Icon placed directly to the left of the battery number
     int icon_x = txt_x - 11;
@@ -122,7 +146,9 @@ void ui_draw_header(M5Canvas &canvas, const char *title, uint32_t hdr_col,
     constexpr int kHdrH = 22;
 
     canvas.fillRect(0, 0, w, kHdrH, hdr_col);
-    canvas.drawFastHLine(0, kHdrH - 1, w, 0x22324A);
+    const auto &theme = ui_theme();
+    canvas.drawFastHLine(0, kHdrH - 1, w,
+                         hdr_col == theme.surface || hdr_col == theme.alternate ? theme.border : 0x22324A);
 
     canvas.setFont(&fonts::Font2);
     canvas.setTextSize(1);
@@ -145,20 +171,20 @@ void ui_draw_header(M5Canvas &canvas, const char *title, uint32_t hdr_col,
     ui_draw_battery_badge(canvas, w - 4, kHdrH, hdr_col);
 }
 
-void ui_draw_footer2(M5Canvas &canvas, const char *line1, const char *line2,
-                     uint32_t bg_col, uint32_t fg_col) {
+void ui_draw_themed_footer(M5Canvas &canvas, const char *line1, const char *line2) {
+    const auto &theme = ui_theme();
     int w = canvas.width();
     int h = canvas.height();
     constexpr int kFooterH = 29;
     int top = h - kFooterH;
 
-    canvas.fillRect(0, top, w, kFooterH, bg_col);
-    canvas.drawFastHLine(0, top, w, 0x1E2B3D);
+    canvas.fillRect(0, top, w, kFooterH, theme.background);
+    canvas.drawFastHLine(0, top, w, theme.border);
 
     canvas.setFont(&fonts::Font2);
     canvas.setTextSize(1);
     canvas.setTextWrap(false);
-    canvas.setTextColor(fg_col, bg_col);
+    canvas.setTextColor(theme.muted, theme.background);
     canvas.setCursor(3, top + 1);
     canvas.print(line1);
     canvas.setCursor(3, top + 14);

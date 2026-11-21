@@ -39,6 +39,8 @@ void app_settings_load() {
     if (nvs_get_i32(h, "bright", &v) == ESP_OK && v >= 20 && v <= 100) {
         g_settings.brightness_pct = (int)v;
     }
+    if (nvs_get_u8(h, "light_theme", &b) == ESP_OK) g_settings.light_theme = (b != 0);
+    if (nvs_get_u8(h, "ir_tx_high", &b) == ESP_OK) g_settings.ir_tx_high = (b != 0);
     if (nvs_get_i32(h, "screen_off", &v) == ESP_OK &&
         (v == 0 || v == 30 || v == 60 || v == 180)) {
         g_settings.screen_off_sec = v;
@@ -114,6 +116,8 @@ void app_settings_save() {
 
     nvs_set_i32(h, "tmr_mode", g_settings.timer_mode);
     nvs_set_i32(h, "bright", g_settings.brightness_pct);
+    nvs_set_u8(h, "light_theme", g_settings.light_theme ? 1 : 0);
+    nvs_set_u8(h, "ir_tx_high", g_settings.ir_tx_high ? 1 : 0);
     nvs_set_i32(h, "screen_off", g_settings.screen_off_sec);
     nvs_set_i32(h, "tz_hr", g_settings.tz_offset_hours);
     nvs_set_i32(h, "epi_sec", g_settings.epi_interval_sec);

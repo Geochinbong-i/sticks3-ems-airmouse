@@ -1,7 +1,7 @@
 #include "ems_timer_core.h"
 
 #include <cstdio>
-#include <cstring>
+#include <algorithm>
 
 static constexpr int kPresetSeconds[EmsTimerCore::kPresetCount] = {
     0, 60, 120, 180, 300, 600, 900
@@ -15,6 +15,8 @@ void EmsTimerCore::reset() {
     state_ = EmsState::Idle;
     total_accum_ms_ = 0;
     run_started_ms_ = 0;
+    case_started_ms_ = 0;
+    case_start_utc_ms_ = 0;
 
     epi_dose_count_ = 0;
     shock_count_ = 0;
@@ -30,6 +32,7 @@ void EmsTimerCore::reset() {
     preset_alarm_active_ = false;
 
     event_count_ = 0;
+    next_event_ = 0;
 }
 
 void EmsTimerCore::set_epi_interval_sec(int sec) {
@@ -64,20 +67,27 @@ void EmsTimerCore::cycle_preset() {
     preset_alarm_active_ = false;
 }
 
-void EmsTimerCore::start(int64_t now_ms) {
+void EmsTimerCore::start(int64_t now_ms, int64_t utc_ms) {
     if (state_ == EmsState::Running) return;
     if (state_ == EmsState::Idle) {
         total_accum_ms_ = 0;
         run_started_ms_ = now_ms;
+        case_started_ms_ = now_ms;
+        case_start_utc_ms_ = utc_ms;
         epi_accum_ms_ = 0;
         epi_anchor_ms_ = now_ms;
         preset_accum_ms_ = 0;
         preset_anchor_ms_ = now_ms;
         state_ = EmsState::Running;
-        add_event(EmsEventType::Start, 0, 0);
+        add_event(EmsEventType::CaseStart, 0, now_ms);
     } else {
         resume(now_ms);
     }
+}
+
+void EmsTimerCore::sync_clock(int64_t now_ms, int64_t utc_ms) {
+    if (state_ == EmsState::Idle || utc_ms <= 0) return;
+    case_start_utc_ms_ = utc_ms - std::max<int64_t>(0, now_ms - case_started_ms_);
 }
 
 void EmsTimerCore::pause(int64_t now_ms) {
@@ -94,7 +104,7 @@ void EmsTimerCore::pause(int64_t now_ms) {
         if (pd > 0) preset_accum_ms_ += pd;
     }
     state_ = EmsState::Paused;
-    add_event(EmsEventType::Pause, 0, (uint32_t)(total_accum_ms_ / 1000));
+    add_event(EmsEventType::TimerPause, 0, now_ms);
 }
 
 void EmsTimerCore::resume(int64_t now_ms) {
@@ -103,7 +113,7 @@ void EmsTimerCore::resume(int64_t now_ms) {
     epi_anchor_ms_ = now_ms;
     preset_anchor_ms_ = now_ms;
     state_ = EmsState::Running;
-    add_event(EmsEventType::Resume, 0, (uint32_t)(total_accum_ms_ / 1000));
+    add_event(EmsEventType::TimerResume, 0, now_ms);
 }
 
 void EmsTimerCore::toggle_pause(int64_t now_ms) {
@@ -122,8 +132,7 @@ void EmsTimerCore::log_epi(int64_t now_ms) {
     epi_due_fired_ = false;
     epi_alarm_active_ = false;
     last_epi_remind_ms_ = now_ms;
-    uint32_t at_sec = (uint32_t)(total_elapsed_ms(now_ms) / 1000);
-    add_event(EmsEventType::Epi, (uint8_t)epi_dose_count_, at_sec);
+    add_event(EmsEventType::Epi, (uint16_t)epi_dose_count_, now_ms);
 }
 
 void EmsTimerCore::log_event(EmsEventType type, int64_t now_ms) {
@@ -134,15 +143,14 @@ void EmsTimerCore::log_event(EmsEventType type, int64_t now_ms) {
     if (state_ == EmsState::Idle) {
         start(now_ms);
     }
-    uint8_t seq = 0;
+    uint16_t seq = 0;
     if (type == EmsEventType::Shock) {
         shock_count_++;
-        seq = (uint8_t)shock_count_;
+        seq = (uint16_t)shock_count_;
     } else if (type == EmsEventType::Vital) {
         restart_preset(now_ms);
     }
-    uint32_t at_sec = (uint32_t)(total_elapsed_ms(now_ms) / 1000);
-    add_event(type, seq, at_sec);
+    add_event(type, seq, now_ms);
 }
 
 void EmsTimerCore::restart_preset(int64_t now_ms) {
@@ -221,33 +229,41 @@ EmsTickResult EmsTimerCore::tick(int64_t now_ms) {
     return res;
 }
 
-void EmsTimerCore::add_event(EmsEventType type, uint8_t seq, uint32_t at_sec) {
-    if (event_count_ >= kMaxEvents) {
-        for (size_t i = 1; i < kMaxEvents; i++) {
-            events_[i - 1] = events_[i];
-        }
-        event_count_ = kMaxEvents - 1;
-    }
-    EmsEvent &ev = events_[event_count_++];
-    ev.at_sec = at_sec;
+void EmsTimerCore::add_event(EmsEventType type, uint16_t seq, int64_t now_ms) {
+    EmsEvent &ev = events_[next_event_];
+    next_event_ = (next_event_ + 1) % kMaxEvents;
+    event_count_ = std::min(event_count_ + 1, kMaxEvents);
+    ev.elapsed_ms = std::max<int64_t>(0, now_ms - case_started_ms_);
     ev.type = type;
     ev.seq = seq;
 
     switch (type) {
-        case EmsEventType::Start:  std::snprintf(ev.label, sizeof(ev.label), "START"); break;
+        case EmsEventType::CaseStart: std::snprintf(ev.label, sizeof(ev.label), "CASE START"); break;
         case EmsEventType::Epi:    std::snprintf(ev.label, sizeof(ev.label), "EPI #%u", (unsigned)seq); break;
         case EmsEventType::Shock:  std::snprintf(ev.label, sizeof(ev.label), "SHOCK #%u", (unsigned)seq); break;
         case EmsEventType::Rosc:   std::snprintf(ev.label, sizeof(ev.label), "ROSC"); break;
-        case EmsEventType::Vital:  std::snprintf(ev.label, sizeof(ev.label), "VITAL"); break;
-        case EmsEventType::Airway: std::snprintf(ev.label, sizeof(ev.label), "AIRWAY"); break;
-        case EmsEventType::Pause:  std::snprintf(ev.label, sizeof(ev.label), "PAUSE"); break;
-        case EmsEventType::Resume: std::snprintf(ev.label, sizeof(ev.label), "RESUME"); break;
+        case EmsEventType::Vital:  std::snprintf(ev.label, sizeof(ev.label), "VITAL CHECK"); break;
+        case EmsEventType::Airway: std::snprintf(ev.label, sizeof(ev.label), "AIRWAY PLACED"); break;
+        case EmsEventType::TimerPause: std::snprintf(ev.label, sizeof(ev.label), "TIMER PAUSED"); break;
+        case EmsEventType::TimerResume: std::snprintf(ev.label, sizeof(ev.label), "TIMER RESUMED"); break;
+        case EmsEventType::CprStart: std::snprintf(ev.label, sizeof(ev.label), "CPR START"); break;
+        case EmsEventType::RhythmVf: std::snprintf(ev.label, sizeof(ev.label), "RHYTHM VF"); break;
+        case EmsEventType::RhythmPvt: std::snprintf(ev.label, sizeof(ev.label), "RHYTHM pVT"); break;
+        case EmsEventType::RhythmPea: std::snprintf(ev.label, sizeof(ev.label), "RHYTHM PEA"); break;
+        case EmsEventType::RhythmAsystole: std::snprintf(ev.label, sizeof(ev.label), "ASYSTOLE"); break;
+        case EmsEventType::Amiodarone: std::snprintf(ev.label, sizeof(ev.label), "AMIODARONE"); break;
+        case EmsEventType::Lidocaine: std::snprintf(ev.label, sizeof(ev.label), "LIDOCAINE"); break;
+        case EmsEventType::IvAccess: std::snprintf(ev.label, sizeof(ev.label), "IV ACCESS"); break;
+        case EmsEventType::IoAccess: std::snprintf(ev.label, sizeof(ev.label), "IO ACCESS"); break;
+        case EmsEventType::Capnography: std::snprintf(ev.label, sizeof(ev.label), "CAPNO START"); break;
+        case EmsEventType::Handoff: std::snprintf(ev.label, sizeof(ev.label), "HANDOFF"); break;
+        case EmsEventType::Rearrest: std::snprintf(ev.label, sizeof(ev.label), "RE-ARREST"); break;
     }
 }
 
 const EmsEvent *EmsTimerCore::event_at(size_t newest_idx) const {
     if (newest_idx >= event_count_) return nullptr;
-    return &events_[event_count_ - 1 - newest_idx];
+    return &events_[(next_event_ + kMaxEvents - 1 - newest_idx) % kMaxEvents];
 }
 
 void EmsTimerCore::format_mm_ss(int64_t ms, char *buf, size_t len) {

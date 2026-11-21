@@ -8,6 +8,7 @@
 #include "sound_fx.h"
 #include "timer/ems_timer_ui.h"
 #include "ui_common.h"
+#include "ui_theme.h"
 #include "time_sync.h"
 
 #include "M5Unified.h"
@@ -32,78 +33,80 @@ void draw_airmouse_frame(M5Canvas &canvas,
                          float preview_x,
                          float preview_y,
                          int64_t now_ms) {
+    const auto &theme = ui_theme();
     int w = canvas.width();
     int h = canvas.height();
     const auto alarms = ems_timer_active_alarms();
     const bool ems_alarm = alarms.any();
     bool flash_on = ((now_ms / 400) % 2) == 0;
 
-    canvas.fillScreen(0x0B0F17);
+    canvas.fillScreen(theme.background);
 
     uint32_t hdr_col = (ems_alarm && flash_on)
-                         ? 0xB71C1C
-                         : ((transport == AirMouseTransport::Ble) ? 0x123866 : 0x11493A);
+                         ? 0xB71C1Cu
+                         : theme.surface;
     const char *hdr_title = (ems_alarm && flash_on)
                               ? alarms.title()
                               : ((transport == AirMouseTransport::Ble) ? "BLE MOUSE" : "USB MOUSE");
-    ui_draw_header(canvas, hdr_title, hdr_col, 0xFFFFFF);
+    ui_draw_header(canvas, hdr_title, hdr_col, ems_alarm && flash_on ? 0xFFFFFFu : theme.text);
 
     if (paused) {
         // Paused banner + Relative Calibration action card
-        canvas.fillRoundRect(4, 26, w - 8, 22, 4, 0x8C5800);
+        canvas.fillRoundRect(4, 26, w - 8, 22, 4, theme.alternate);
         canvas.setFont(&fonts::Font2);
         canvas.setTextSize(1);
         canvas.setTextWrap(false);
-        canvas.setTextColor(0xFFFFFF, 0x8C5800);
+        canvas.setTextColor(theme.warning, theme.alternate);
         canvas.setTextDatum(MC_DATUM);
         canvas.drawString("PAUSED", w / 2, 37);
         canvas.setTextDatum(TL_DATUM);
 
-        canvas.drawRoundRect(5, 54, w - 10, 152, 6, 0xFFB300);
-        canvas.fillRoundRect(6, 55, w - 12, 150, 5, 0x151209);
+        canvas.drawRoundRect(5, 54, w - 10, 152, 6, theme.warning);
+        canvas.fillRoundRect(6, 55, w - 12, 150, 5, theme.surface);
 
-        canvas.setTextColor(0xFFD54F, 0x151209);
+        canvas.setTextColor(theme.warning, theme.surface);
         canvas.setCursor(11, 61);
         canvas.print("RELATIVE ZERO");
 
-        canvas.setTextColor(0xE2E8F0, 0x151209);
+        canvas.setTextColor(theme.text, theme.surface);
         canvas.setCursor(11, 82);
         canvas.print("Hold comfy pose,");
         canvas.setCursor(11, 98);
         canvas.print("tap B to zero.");
 
-        canvas.fillRoundRect(10, 120, w - 20, 24, 4, 0x0E5E36);
-        canvas.setTextColor(0xFFFFFF, 0x0E5E36);
+        canvas.fillRoundRect(10, 120, w - 20, 24, 4, theme.selected);
+        canvas.setTextColor(theme.on_selected, theme.selected);
         canvas.setCursor(14, 124);
         canvas.print("B : Rel Cal Zero");
 
-        canvas.fillRoundRect(10, 148, w - 20, 24, 4, 0x1E3A5F);
-        canvas.setTextColor(0xFFFFFF, 0x1E3A5F);
+        canvas.fillRoundRect(10, 148, w - 20, 24, 4, theme.alternate);
+        canvas.setTextColor(theme.text, theme.alternate);
         canvas.setCursor(14, 152);
         canvas.print("A+B : Resume");
 
-        canvas.fillRoundRect(10, 176, w - 20, 24, 4, 0x4A1C1C);
-        canvas.setTextColor(0xFFCDD2, 0x4A1C1C);
+        canvas.fillRoundRect(10, 176, w - 20, 24, 4, theme.alternate);
+        canvas.setTextColor(theme.danger, theme.alternate);
         canvas.setCursor(14, 180);
         canvas.print("Hold A+B : Exit");
 
-        ui_draw_footer2(canvas, "B: Zero Held Pose", "Hold A+B : Go Home");
+        ui_draw_themed_footer(canvas, "B: Zero Held Pose", "Hold A+B : Go Home");
         ui_present(canvas);
         return;
     }
 
     // Connection / scroll status pill
-    uint32_t pill_col = 0x552222;
+    uint32_t pill_fg = theme.danger;
+    const uint32_t pill_col = theme.alternate;
     const char *status_txt = "WAITING...";
     if (scroll_mode) {
-        pill_col = 0x145B7A;
+        pill_fg = theme.accent;
         status_txt = "SCROLL MODE";
     } else if (connected) {
         if (suspended) {
-            pill_col = 0x554400;
+            pill_fg = theme.warning;
             status_txt = "USB SUSPENDED";
         } else {
-            pill_col = 0x0E5E36;
+            pill_fg = theme.text;
             status_txt = (transport == AirMouseTransport::Ble) ? "BLE CONNECTED" : "USB CONNECTED";
         }
     } else {
@@ -114,7 +117,7 @@ void draw_airmouse_frame(M5Canvas &canvas,
     canvas.setFont(&fonts::Font2);
     canvas.setTextSize(1);
     canvas.setTextWrap(false);
-    canvas.setTextColor(0xFFFFFF, pill_col);
+    canvas.setTextColor(pill_fg, pill_col);
     canvas.setTextDatum(MC_DATUM);
     canvas.drawString(status_txt, w / 2, 37);
     canvas.setTextDatum(TL_DATUM);
@@ -124,18 +127,18 @@ void draw_airmouse_frame(M5Canvas &canvas,
     int by = 52;
     int bw = w - 12;
     int bh = h - 108;
-    canvas.fillRoundRect(bx, by, bw, bh, 6, 0x080C12);
-    canvas.drawRoundRect(bx, by, bw, bh, 6, 0x2E3B4E);
-    canvas.drawFastHLine(bx + 4, by + bh / 2, bw - 8, 0x1A2332);
-    canvas.drawFastVLine(bx + bw / 2, by + 4, bh - 8, 0x1A2332);
+    canvas.fillRoundRect(bx, by, bw, bh, 6, theme.surface);
+    canvas.drawRoundRect(bx, by, bw, bh, 6, theme.border);
+    canvas.drawFastHLine(bx + 4, by + bh / 2, bw - 8, theme.border);
+    canvas.drawFastVLine(bx + bw / 2, by + 4, bh - 8, theme.border);
 
     // Drift/Cal badge inside top-left of crosshair box
     const char *zbadge = rel_pose_active ? "REL+ABS"
                        : (g_settings.imu_abs_valid ? "ABS OK" : "AUTO");
-    canvas.fillRoundRect(bx + 4, by + 4, 58, 16, 3, 0x11262E);
+    canvas.fillRoundRect(bx + 4, by + 4, 58, 16, 3, theme.alternate);
     canvas.setFont(&fonts::Font2);
     canvas.setTextSize(1);
-    canvas.setTextColor(0x4DD0E1, 0x11262E);
+    canvas.setTextColor(theme.accent, theme.alternate);
     canvas.setCursor(bx + 7, by + 4);
     canvas.print(zbadge);
 
@@ -146,10 +149,9 @@ void draw_airmouse_frame(M5Canvas &canvas,
     if (cy < by + 10) cy = by + 10;
     if (cy > by + bh - 10) cy = by + bh - 10;
 
-    uint32_t cur_col = 0x00E5FF;
-    if (scroll_mode) cur_col = 0x66D9FF;
-    else if (buttons & 0x01) cur_col = 0xFF4444;
-    else if (buttons & 0x02) cur_col = 0xFFBB33;
+    uint32_t cur_col = theme.accent;
+    if (!scroll_mode && (buttons & 0x01)) cur_col = theme.danger;
+    else if (!scroll_mode && (buttons & 0x02)) cur_col = theme.warning;
 
     canvas.drawCircle(cx, cy, 8, cur_col);
     canvas.drawLine(cx - 11, cy, cx + 11, cy, cur_col);
@@ -160,30 +162,31 @@ void draw_airmouse_frame(M5Canvas &canvas,
     int sy = by + bh + 4;
     canvas.setFont(&fonts::Font2);
     canvas.setTextSize(1);
-    canvas.setTextColor(0xB0C4D8, 0x0B0F17);
+    canvas.setTextColor(theme.muted, theme.background);
     canvas.setCursor(6, sy + 2);
     canvas.printf("SENS:%d", g_settings.air_sensitivity);
 
-    uint32_t lmb_bg = (buttons & 0x01) ? 0xCC2222 : 0x1D2633;
-    uint32_t rmb_bg = (buttons & 0x02) ? 0xD98200 : 0x1D2633;
+    const bool left = buttons & 0x01, right = buttons & 0x02;
+    const uint32_t lmb_bg = left ? theme.selected : theme.alternate;
+    const uint32_t rmb_bg = right ? theme.selected : theme.alternate;
     canvas.fillRoundRect(w - 72, sy, 33, 19, 3, lmb_bg);
-    canvas.setTextColor(0xFFFFFF, lmb_bg);
+    canvas.setTextColor(left ? theme.on_selected : theme.muted, lmb_bg);
     canvas.setCursor(w - 69, sy + 1);
     canvas.print("LMB");
 
     canvas.fillRoundRect(w - 36, sy, 32, 19, 3, rmb_bg);
-    canvas.setTextColor(0xFFFFFF, rmb_bg);
+    canvas.setTextColor(right ? theme.on_selected : theme.muted, rmb_bg);
     canvas.setCursor(w - 33, sy + 1);
     canvas.print("RMB");
 
-    ui_draw_footer2(canvas, "A: Click  B: Right", "Hold B:Scr AB:Menu");
+    ui_draw_themed_footer(canvas, "A: Click  B: Right", "Hold B:Scr AB:Menu");
     ui_present(canvas);
 }
 
 void perform_relative_zero(M5Canvas &canvas, AirMouseTransport transport,
                            GyroAirMouseFilter &filter) {
+    const auto &theme = ui_theme();
     int w = canvas.width();
-    uint32_t hdr_col = (transport == AirMouseTransport::Ble) ? 0x123866 : 0x11493A;
     const char *hdr_title = (transport == AirMouseTransport::Ble) ? "BLE MOUSE" : "USB MOUSE";
 
     // Sample 20 frames (~240ms) in user's comfortable held hand position
@@ -223,31 +226,31 @@ void perform_relative_zero(M5Canvas &canvas, AirMouseTransport transport,
         }
     }
 
-    canvas.fillScreen(0x0B0F17);
-    ui_draw_header(canvas, hdr_title, hdr_col, 0xFFFFFF);
+    canvas.fillScreen(theme.background);
+    ui_draw_header(canvas, hdr_title, theme.surface, theme.text);
 
-    canvas.drawRoundRect(6, 42, w - 12, 140, 7, 0x00E5FF);
-    canvas.fillRoundRect(7, 43, w - 14, 138, 6, 0x0B1E28);
+    canvas.drawRoundRect(6, 42, w - 12, 140, 7, theme.accent);
+    canvas.fillRoundRect(7, 43, w - 14, 138, 6, theme.surface);
 
     canvas.setFont(&fonts::Font2);
     canvas.setTextSize(1);
     canvas.setTextWrap(false);
-    canvas.setTextColor(0x00E5FF, 0x0B1E28);
+    canvas.setTextColor(theme.accent, theme.surface);
     canvas.setCursor(14, 52);
     canvas.print("REL ZERO OK!");
 
-    canvas.setTextColor(0xE0F7FA, 0x0B1E28);
+    canvas.setTextColor(theme.text, theme.surface);
     canvas.setCursor(14, 80);
     canvas.print("Held angle is now");
     canvas.setCursor(14, 96);
     canvas.print("the neutral zero.");
 
-    canvas.fillRoundRect(14, 126, w - 28, 8, 3, 0x00E5FF);
-    canvas.setTextColor(0x69F0AE, 0x0B1E28);
+    canvas.fillRoundRect(14, 126, w - 28, 8, 3, theme.accent);
+    canvas.setTextColor(theme.accent, theme.surface);
     canvas.setCursor(14, 146);
     canvas.print("Resuming cursor...");
 
-    ui_draw_footer2(canvas, "A: Click  B: Right", "Hold B:Scr AB:Menu");
+    ui_draw_themed_footer(canvas, "A: Click  B: Right", "Hold B:Scr AB:Menu");
     ui_present(canvas);
 
     sound_fx_confirm();
@@ -258,10 +261,11 @@ void perform_relative_zero(M5Canvas &canvas, AirMouseTransport transport,
 } // namespace
 
 void airmouse_ui_run(AirMouseTransport transport) {
+    const auto &theme = ui_theme();
     if (!M5.Imu.isEnabled()) {
-        M5.Display.fillScreen(0x000000);
+        M5.Display.fillScreen(theme.background);
         M5.Display.setFont(&fonts::Font2);
-        M5.Display.setTextColor(0xFF4444, 0x000000);
+        M5.Display.setTextColor(theme.danger, theme.background);
         M5.Display.setCursor(8, 80);
         M5.Display.println("IMU not found!");
         vTaskDelay(pdMS_TO_TICKS(1500));
@@ -280,9 +284,9 @@ void airmouse_ui_run(AirMouseTransport transport) {
         if (!ok) airmouse_ble_stop();
     }
     if (!ok) {
-        M5.Display.fillScreen(0x000000);
+        M5.Display.fillScreen(theme.background);
         M5.Display.setFont(&fonts::Font2);
-        M5.Display.setTextColor(0xFF4444, 0x000000);
+        M5.Display.setTextColor(theme.danger, theme.background);
         M5.Display.setCursor(8, 80);
         M5.Display.println(transport == AirMouseTransport::Ble ? "BLE init fail" : "USB init fail");
         vTaskDelay(pdMS_TO_TICKS(1500));

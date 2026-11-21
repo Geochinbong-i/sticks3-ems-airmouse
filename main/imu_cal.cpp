@@ -3,6 +3,7 @@
 #include "input_util.h"
 #include "sound_fx.h"
 #include "ui_common.h"
+#include "ui_theme.h"
 
 #include "M5Unified.h"
 #include "esp_log.h"
@@ -44,29 +45,30 @@ enum class CalViewState {
 
 void draw_abs_cal_idle(M5Canvas &canvas, CalViewState vst, float last_spread) {
     int w = canvas.width();
-    canvas.fillScreen(0x0B0F17);
-    ui_draw_header(canvas, "IMU ABS CAL", 0x1D283A, 0x80D8FF);
+    const auto &theme = ui_theme();
+    canvas.fillScreen(theme.background);
+    ui_draw_header(canvas, "IMU ABS CAL", theme.surface, theme.accent);
 
     canvas.setFont(&fonts::Font2);
     canvas.setTextSize(1);
     canvas.setTextWrap(false);
 
     if (vst == CalViewState::Done) {
-        canvas.drawRoundRect(6, 30, w - 12, 134, 7, 0x00E676);
-        canvas.fillRoundRect(7, 31, w - 14, 132, 6, 0x0B2217);
+        canvas.drawRoundRect(6, 30, w - 12, 134, 7, theme.accent);
+        canvas.fillRoundRect(7, 31, w - 14, 132, 6, theme.surface);
 
-        canvas.setTextColor(0x69F0AE, 0x0B2217);
+        canvas.setTextColor(theme.accent, theme.surface);
         canvas.setCursor(13, 38);
         canvas.print("ABS CAL SAVED!");
 
-        canvas.setTextColor(0xE8F5E9, 0x0B2217);
+        canvas.setTextColor(theme.text, theme.surface);
         canvas.setCursor(13, 62);
         canvas.print("Offsets saved to");
         canvas.setCursor(13, 78);
         canvas.print("NVS flash memory.");
 
-        canvas.drawFastHLine(13, 102, w - 26, 0x1D4E35);
-        canvas.setTextColor(0xA5D6A7, 0x0B2217);
+        canvas.drawFastHLine(13, 102, w - 26, theme.border);
+        canvas.setTextColor(theme.muted, theme.surface);
         char l1[24], l2[24];
         std::snprintf(l1, sizeof(l1), "X:%+.2f Y:%+.2f", g_settings.imu_abs_gx, g_settings.imu_abs_gy);
         std::snprintf(l2, sizeof(l2), "Z:%+.2f S:%.2f", g_settings.imu_abs_gz, last_spread);
@@ -75,14 +77,14 @@ void draw_abs_cal_idle(M5Canvas &canvas, CalViewState vst, float last_spread) {
         canvas.setCursor(13, 128);
         canvas.print(l2);
     } else if (vst == CalViewState::FailedMove) {
-        canvas.drawRoundRect(6, 30, w - 12, 134, 7, 0xFF5252);
-        canvas.fillRoundRect(7, 31, w - 14, 132, 6, 0x240E0E);
+        canvas.drawRoundRect(6, 30, w - 12, 134, 7, theme.danger);
+        canvas.fillRoundRect(7, 31, w - 14, 132, 6, theme.surface);
 
-        canvas.setTextColor(0xFF8A80, 0x240E0E);
+        canvas.setTextColor(theme.danger, theme.surface);
         canvas.setCursor(13, 38);
         canvas.print("UNIT MOVED!");
 
-        canvas.setTextColor(0xFFCDD2, 0x240E0E);
+        canvas.setTextColor(theme.text, theme.surface);
         canvas.setCursor(13, 66);
         canvas.print("Place StickS3 flat");
         canvas.setCursor(13, 82);
@@ -93,21 +95,21 @@ void draw_abs_cal_idle(M5Canvas &canvas, CalViewState vst, float last_spread) {
         canvas.setCursor(13, 116);
         canvas.print(l1);
     } else {
-        canvas.drawRoundRect(6, 30, w - 12, 126, 7, 0x38BDF8);
-        canvas.fillRoundRect(7, 31, w - 14, 124, 6, 0x0F1B29);
+        canvas.drawRoundRect(6, 30, w - 12, 126, 7, theme.border);
+        canvas.fillRoundRect(7, 31, w - 14, 124, 6, theme.surface);
 
-        canvas.setTextColor(0x80D8FF, 0x0F1B29);
+        canvas.setTextColor(theme.accent, theme.surface);
         canvas.setCursor(13, 38);
         canvas.print("BASELINE ZERO");
 
-        canvas.setTextColor(0xE2E8F0, 0x0F1B29);
+        canvas.setTextColor(theme.text, theme.surface);
         canvas.setCursor(13, 60);
         canvas.print("Place StickS3 flat");
         canvas.setCursor(13, 76);
         canvas.print("on a steady table.");
 
-        canvas.drawFastHLine(13, 100, w - 26, 0x1E334A);
-        canvas.setTextColor(0x90A4AE, 0x0F1B29);
+        canvas.drawFastHLine(13, 100, w - 26, theme.border);
+        canvas.setTextColor(theme.muted, theme.surface);
         if (g_settings.imu_abs_valid) {
             char l1[24], l2[24];
             std::snprintf(l1, sizeof(l1), "X:%+.2f Y:%+.2f", g_settings.imu_abs_gx, g_settings.imu_abs_gy);
@@ -122,32 +124,33 @@ void draw_abs_cal_idle(M5Canvas &canvas, CalViewState vst, float last_spread) {
         }
     }
 
-    canvas.fillRoundRect(6, 168, w - 12, 30, 5, 0x1565C0);
-    canvas.setTextColor(0xFFFFFF, 0x1565C0);
+    canvas.fillRoundRect(6, 168, w - 12, 30, 5, theme.selected);
+    canvas.setTextColor(theme.on_selected, theme.selected);
     canvas.setTextDatum(MC_DATUM);
     canvas.drawString("B : START ABS CAL", w / 2, 183);
     canvas.setTextDatum(TL_DATUM);
 
-    ui_draw_footer2(canvas, "A: Clear   B: Start", "Hold A+B : Go Back");
+    ui_draw_themed_footer(canvas, "A: Clear   B: Start", "Hold A+B : Go Back");
     ui_present(canvas);
 }
 
 void draw_sampling_progress(M5Canvas &canvas, int done, int total) {
     int w = canvas.width();
-    canvas.fillScreen(0x0B0F17);
-    ui_draw_header(canvas, "IMU ABS CAL", 0x1D283A, 0x80D8FF);
+    const auto &theme = ui_theme();
+    canvas.fillScreen(theme.background);
+    ui_draw_header(canvas, "IMU ABS CAL", theme.surface, theme.accent);
 
-    canvas.drawRoundRect(6, 36, w - 12, 148, 7, 0xFFB300);
-    canvas.fillRoundRect(7, 37, w - 14, 146, 6, 0x1D160B);
+    canvas.drawRoundRect(6, 36, w - 12, 148, 7, theme.warning);
+    canvas.fillRoundRect(7, 37, w - 14, 146, 6, theme.surface);
 
     canvas.setFont(&fonts::Font2);
     canvas.setTextSize(1);
     canvas.setTextWrap(false);
-    canvas.setTextColor(0xFFD54F, 0x1D160B);
+    canvas.setTextColor(theme.warning, theme.surface);
     canvas.setCursor(13, 46);
     canvas.print("SAMPLING IMU...");
 
-    canvas.setTextColor(0xFFF8E1, 0x1D160B);
+    canvas.setTextColor(theme.text, theme.surface);
     canvas.setCursor(13, 72);
     canvas.print("Do not move unit.");
     canvas.setCursor(13, 90);
@@ -155,18 +158,18 @@ void draw_sampling_progress(M5Canvas &canvas, int done, int total) {
 
     int bar_w = w - 30;
     int fill_w = (done * bar_w) / total;
-    canvas.fillRoundRect(15, 120, bar_w, 12, 3, 0x090D14);
+    canvas.fillRoundRect(15, 120, bar_w, 12, 3, theme.alternate);
     if (fill_w > 0) {
-        canvas.fillRoundRect(15, 120, fill_w, 12, 3, 0xFFB300);
+        canvas.fillRoundRect(15, 120, fill_w, 12, 3, theme.warning);
     }
 
     char pbuf[24];
     std::snprintf(pbuf, sizeof(pbuf), "%d / %d (%d%%)", done, total, (done * 100) / total);
-    canvas.setTextColor(0xFFD54F, 0x1D160B);
+    canvas.setTextColor(theme.warning, theme.surface);
     canvas.setCursor(15, 142);
     canvas.print(pbuf);
 
-    ui_draw_footer2(canvas, "Sampling steady...", "Please wait 1.5s");
+    ui_draw_themed_footer(canvas, "Sampling steady...", "Please wait 1.5s");
     ui_present(canvas);
 }
 

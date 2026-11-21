@@ -5,6 +5,7 @@
 #include "sound_fx.h"
 #include "time_sync.h"
 #include "ui_common.h"
+#include "ui_theme.h"
 
 #include "M5Unified.h"
 #include "freertos/FreeRTOS.h"
@@ -23,7 +24,7 @@ struct StagePalette {
 // Red -> Orange -> Yellow -> Green -> Blue -> Purple -> Pink
 constexpr StagePalette kStageColors[SimpleTimerCore::kMaxStamps] = {
     {0xC62828, 0xFFFFFF},
-    {0xEF6C00, 0xFFFFFF},
+    {0xEF6C00, 0x111111},
     {0xFBC02D, 0x111111},
     {0x2E7D32, 0xFFFFFF},
     {0x1565C0, 0xFFFFFF},
@@ -63,37 +64,38 @@ bool confirm_simple_reset(M5Canvas &canvas) {
         }
 
         int w = canvas.width();
-        canvas.fillScreen(0x140A0A);
-        ui_draw_header(canvas, "RESET TIME", 0x2B1212, 0xFF8A80);
+        const auto &theme = ui_theme();
+        canvas.fillScreen(theme.background);
+        ui_draw_header(canvas, "RESET TIME", theme.surface, theme.danger);
 
-        canvas.drawRoundRect(6, 32, w - 12, 168, 7, 0xFF5252);
-        canvas.fillRoundRect(7, 33, w - 14, 166, 6, 0x1B0D0D);
+        canvas.drawRoundRect(6, 32, w - 12, 168, 7, theme.danger);
+        canvas.fillRoundRect(7, 33, w - 14, 166, 6, theme.surface);
 
         canvas.setFont(&fonts::Font2);
         canvas.setTextSize(1);
         canvas.setTextWrap(false);
 
-        canvas.setTextColor(0xFF8A80, 0x1B0D0D);
+        canvas.setTextColor(theme.danger, theme.surface);
         canvas.setCursor(14, 42);
         canvas.print("RESET ALL?");
 
-        canvas.setTextColor(0xE2E8F0, 0x1B0D0D);
+        canvas.setTextColor(theme.text, theme.surface);
         canvas.setCursor(14, 68);
         canvas.print("Clear all stamped");
         canvas.setCursor(14, 84);
         canvas.print("timestamps now?");
 
-        canvas.fillRoundRect(12, 114, w - 24, 30, 4, 0x183834);
-        canvas.setTextColor(0x80CBC4, 0x183834);
+        canvas.fillRoundRect(12, 114, w - 24, 30, 4, theme.alternate);
+        canvas.setTextColor(theme.text, theme.alternate);
         canvas.setCursor(18, 121);
         canvas.print("A : Keep Data");
 
-        canvas.fillRoundRect(12, 152, w - 24, 30, 4, 0x6A1616);
-        canvas.setTextColor(0xFFCDD2, 0x6A1616);
+        canvas.fillRoundRect(12, 152, w - 24, 30, 4, theme.alternate);
+        canvas.setTextColor(theme.danger, theme.alternate);
         canvas.setCursor(18, 159);
         canvas.print("B : Clear All");
 
-        ui_draw_footer2(canvas, "A: Cancel  B: Clear", "Hold A+B : Go Back", 0x140A0A, 0xC09E9E);
+        ui_draw_themed_footer(canvas, "A: Cancel  B: Clear", "Hold A+B : Go Back");
         ui_present(canvas);
         input_idle_delay(25);
     }
@@ -106,7 +108,8 @@ void draw_simple_frame(M5Canvas &canvas, int64_t now_ms) {
     const bool ems_alarm = alarms.any();
     bool flash_on = ((now_ms / 400) % 2) == 0;
 
-    canvas.fillScreen(0x070A0F);
+    const auto &theme = ui_theme();
+    canvas.fillScreen(theme.background);
 
     int ch = 0, cm = 0, cs = 0;
     const bool clock_valid = time_sync_is_valid();
@@ -116,8 +119,9 @@ void draw_simple_frame(M5Canvas &canvas, int64_t now_ms) {
         std::snprintf(clk_buf, sizeof(clk_buf), "%02d:%02d:%02d", ch, cm, cs);
     }
 
-    uint32_t hdr_col = (ems_alarm && flash_on) ? 0xB71C1C : 0x142033;
-    ui_draw_header(canvas, (ems_alarm && flash_on) ? alarms.title() : clk_buf, hdr_col, 0xFFFFFF);
+    uint32_t hdr_col = (ems_alarm && flash_on) ? 0xB71C1Cu : theme.surface;
+    ui_draw_header(canvas, (ems_alarm && flash_on) ? alarms.title() : clk_buf, hdr_col,
+                   ems_alarm && flash_on ? 0xFFFFFFu : theme.accent);
 
     constexpr int kTopY = 22;
     constexpr int kFooterH = 29;
@@ -147,15 +151,15 @@ void draw_simple_frame(M5Canvas &canvas, int64_t now_ms) {
 
     if (cnt == 0) {
         int cy = kTopY + (h - kTopY - kFooterH - 64) / 2;
-        canvas.drawRoundRect(8, cy, w - 16, 64, 6, 0x24344C);
-        canvas.fillRoundRect(9, cy + 1, w - 18, 62, 5, 0x0F1621);
+        canvas.drawRoundRect(8, cy, w - 16, 64, 6, theme.border);
+        canvas.fillRoundRect(9, cy + 1, w - 18, 62, 5, theme.surface);
         canvas.setFont(&fonts::Font2);
         canvas.setTextSize(1);
         canvas.setTextWrap(false);
-        canvas.setTextColor(0x80D8FF, 0x0F1621);
+        canvas.setTextColor(theme.accent, theme.surface);
         canvas.setCursor(16, cy + 8);
         canvas.print("READY (0/7)");
-        canvas.setTextColor(0xCFD8DC, 0x0F1621);
+        canvas.setTextColor(theme.text, theme.surface);
         canvas.setCursor(16, cy + 28);
         canvas.print("Press A to stamp");
         canvas.setCursor(16, cy + 44);
@@ -163,17 +167,17 @@ void draw_simple_frame(M5Canvas &canvas, int64_t now_ms) {
     } else if (cnt < SimpleTimerCore::kMaxStamps) {
         // Subtle next-slot hairline preview so user sees where next press stacks
         int ny = kTopY + (int)cnt * kBoxH;
-        canvas.fillRect(0, ny, w, kBoxH, 0x0F1622);
+        canvas.fillRect(0, ny, w, kBoxH, theme.alternate);
         canvas.drawFastHLine(0, ny + kBoxH - 1, w, kStageColors[cnt].bg);
         canvas.setFont(&fonts::Font4);
         canvas.setTextSize(1);
-        canvas.setTextColor(0x455A64, 0x0F1622);
+        canvas.setTextColor(theme.muted, theme.alternate);
         canvas.setTextDatum(MC_DATUM);
         canvas.drawString("--:--:--", w / 2, ny + kBoxH / 2 + 1);
         canvas.setTextDatum(TL_DATUM);
     }
 
-    ui_draw_footer2(canvas, clock_valid ? "A: Stamp   B: Reset" : "Unset     B: Reset",
+    ui_draw_themed_footer(canvas, clock_valid ? "A: Stamp   B: Reset" : "Unset     B: Reset",
                     "Hold A+B : Go Home");
     ui_present(canvas);
 }

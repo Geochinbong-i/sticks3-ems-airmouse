@@ -57,3 +57,14 @@ bool ir_is_nec(const IrSignal &signal) {
     // NEC and extended NEC both carry an inverted command byte.
     return (((bits >> 16) ^ (bits >> 24)) & 0xFF) == 0xFF;
 }
+
+bool ir_supports_high_power(const IrSignal &signal) {
+    if (!ir_valid_signal(signal)) return false;
+    unsigned mark_time_us = 0;
+    for (size_t i = 0; i < signal.count; i += 2) {
+        const unsigned mark_us = signal.duration_us[i];
+        if (mark_us > 10000) return false;
+        mark_time_us += mark_us;
+    }
+    return mark_time_us <= 32000;
+}

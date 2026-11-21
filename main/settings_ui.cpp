@@ -6,6 +6,7 @@
 #include "sound_fx.h"
 #include "time_sync.h"
 #include "ui_common.h"
+#include "ui_theme.h"
 
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
@@ -17,9 +18,9 @@
 namespace {
 
 enum class Setting {
-    Brightness, ScreenOff, Rotation, Sync, Timezone, TimerMode, EpiInterval,
+    Brightness, Theme, ScreenOff, Rotation, Sync, Timezone, TimerMode, EpiInterval,
     Sensitivity, InvertX, InvertY, Swap, NaturalScroll, ImuCal,
-    HarpGate, Volume, Mute, Reboot,
+    HarpGate, Volume, Mute, IrTxPower, Reboot,
 };
 
 struct Row {
@@ -28,7 +29,7 @@ struct Row {
 };
 
 constexpr Row kDisplay[] = {
-    {"Brightness", Setting::Brightness}, {"Screen Off", Setting::ScreenOff},
+    {"Brightness", Setting::Brightness}, {"Theme", Setting::Theme}, {"Screen Off", Setting::ScreenOff},
     {"Flip Screen", Setting::Rotation},
 };
 constexpr Row kTime[] = {{"Time Sync", Setting::Sync}, {"Timezone", Setting::Timezone}};
@@ -40,6 +41,7 @@ constexpr Row kAirMouse[] = {
 };
 constexpr Row kAirHarp[] = {{"Play Button", Setting::HarpGate}};
 constexpr Row kSound[] = {{"Volume", Setting::Volume}, {"Mute", Setting::Mute}};
+constexpr Row kIr[] = {{"TX Power", Setting::IrTxPower}};
 constexpr Row kDevice[] = {{"Reboot Device", Setting::Reboot}};
 
 struct Group {
@@ -56,6 +58,7 @@ constexpr Group kGroups[] = {
     {"Air Mouse", "AIR MOUSE", kAirMouse, std::size(kAirMouse)},
     {"Air Harp", "AIR HARP", kAirHarp, std::size(kAirHarp)},
     {"Sound", "SOUND", kSound, std::size(kSound)},
+    {"IR Remote", "IR REMOTE", kIr, std::size(kIr)},
     {"Device", "DEVICE", kDevice, std::size(kDevice)},
 };
 constexpr int kGroupCount = std::size(kGroups);
@@ -76,6 +79,8 @@ const char *on_off(bool on) { return on ? "ON" : "OFF"; }
 const char *setting_value(Setting setting, char *buf, size_t size) {
     switch (setting) {
         case Setting::Brightness: std::snprintf(buf, size, "%d%%", g_settings.brightness_pct); break;
+        case Setting::Theme: return g_settings.light_theme ? "LIGHT" : "DARK";
+        case Setting::IrTxPower: return g_settings.ir_tx_high ? "HIGH" : "NORMAL";
         case Setting::ScreenOff: return kScreenOffLabels[screen_off_index()];
         case Setting::Rotation: return g_settings.rotation == 2 ? "180" : "0";
         case Setting::Timezone: std::snprintf(buf, size, "UTC%+d", g_settings.tz_offset_hours); break;
@@ -103,6 +108,8 @@ void change_setting(Setting setting) {
             if (g_settings.brightness_pct > 100) g_settings.brightness_pct = 20;
             ui_apply_brightness();
             break;
+        case Setting::Theme: g_settings.light_theme = !g_settings.light_theme; break;
+        case Setting::IrTxPower: g_settings.ir_tx_high = !g_settings.ir_tx_high; break;
         case Setting::ScreenOff:
             g_settings.screen_off_sec =
                 kScreenOffSeconds[(screen_off_index() + 1) % kScreenOffCount];
@@ -154,16 +161,22 @@ void draw_settings(M5Canvas &canvas, const Group *group, int selected) {
     const int count = group ? group->count : kGroupCount;
     const int w = canvas.width();
     const int h = canvas.height();
-    canvas.fillScreen(0x0B0F17);
-    ui_draw_header(canvas, group ? group->title : "SETTINGS", 0x1D283A);
+    const auto &theme = ui_theme();
+    canvas.fillScreen(theme.background);
+    ui_draw_header(canvas, group ? group->title : "SETTINGS", theme.surface, theme.text);
     canvas.setFont(&fonts::Font2);
     canvas.setTextSize(1);
     canvas.setTextWrap(false);
 
-    constexpr int kTop = 25;
-    constexpr int kStep = 23;
-    const int visible = (h - 29 - kTop) / kStep;
+    constexpr int kTop = 32;
+    constexpr int kStep = 21;
+    const int visible = (h - 39 - kTop) / kStep;
     const int start = selected >= visible ? selected - visible + 1 : 0;
+    const int center = w / 2;
+    if (start > 0) canvas.fillTriangle(center, 25, center - 4, 29, center + 4, 29, theme.accent);
+    if (start + visible <= count) {
+        canvas.fillTriangle(center, h - 32, center - 4, h - 36, center + 4, h - 36, theme.accent);
+    }
     for (int row = start, y = kTop; row <= count && row - start < visible; ++row, y += kStep) {
         char buf[16]{};
         const char *label = "< BACK";
@@ -174,14 +187,15 @@ void draw_settings(M5Canvas &canvas, const Group *group, int selected) {
         }
 
         const bool focused = row == selected;
-        const uint32_t bg = focused ? 0x1976D2 : (row % 2 == 0 ? 0x111824 : 0x0B0F17);
-        canvas.fillRoundRect(3, y, w - 6, 21, 3, bg);
-        canvas.setTextColor(focused ? 0xFFFFFF : 0xCFD8DC, bg);
-        canvas.drawString(label, 7, y + 2);
-        canvas.setTextColor(focused ? 0xE3F2FD : 0x80D8FF, bg);
+        const uint32_t bg = focused ? theme.selected : (row % 2 == 0 ? theme.surface : theme.alternate);
+        canvas.fillRect(3, y, w - 6, kStep - 1, bg);
+        if (focused) canvas.fillRect(3, y, 3, kStep - 1, g_settings.light_theme ? theme.on_selected : theme.accent);
+        canvas.setTextColor(focused ? theme.on_selected : theme.text, bg);
+        canvas.drawString(label, 9, y + 2);
+        canvas.setTextColor(focused ? theme.on_selected : theme.accent, bg);
         canvas.drawRightString(value, w - 7, y + 2);
     }
-    ui_draw_footer2(canvas, group ? "A: Next    B: Edit" : "A: Next    B: Open",
+    ui_draw_themed_footer(canvas, group ? "A: Next    B: Edit" : "A: Next    B: Open",
                     group ? "Hold A+B : Back" : "Hold A+B : Home");
     ui_present(canvas);
 }

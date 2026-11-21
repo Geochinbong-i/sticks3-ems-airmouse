@@ -6,12 +6,13 @@ M5Stack **StickS3** (`ESP32-S3-PICO-1-N8R8`) 전용 경량 펌웨어입니다.
 ## 주요 기능
 
 ### 1. EMS TIMER (구급대원 타이머)
-- **총 경과 시간 스톱워치 (`TOTAL`)**: `HH:MM:SS` 실시간 표시, 일시정지/재개 지원.
+- **스톱워치 (`TIMER`)**: `HH:MM:SS` 표시, 일시정지/재개 지원.
 - **에피네프린(EPI) 투여 간격 타이머**: 3분 / 4분 / 5분 설정 가능, 투여 횟수(`DOSE #N`) 자동 카운트.
   - 30초 이하 남으면 황색 경고, 0초 도달 시 적색 점멸 + 경고음, 이후 초과 시간(`+MM:SS`) 표시 및 15초마다 리마인더 알림.
 - **바이탈/체크포인트 카운트다운 프리셋**: `OFF / 1m / 2m / 3m / 5m / 10m / 15m` 선택 가능.
-- **처치 이벤트 로그 (`EVENT LOG`)**: `START`, `EPI #N`, `SHOCK #N`, `ROSC`, `VITAL`, `AIRWAY`, `PAUSE`, `RESUME` 타임스탬프를 최대 32건 기록 및 전체 조회.
-- 홈 화면으로 잠시 나가도 진행 중인 타이머와 로그는 유지됩니다(`RESET` 확인 팝업으로 오작동 초기화 방지).
+- **이벤트 로그 (`VIEW LOGS`)**에 현장 이벤트를 최근 64건까지 기록합니다. 사건 시작 이후의 경과 시각은 타이머를 일시정지해도 계속 흐릅니다. 시계가 맞춰지면 기존 이벤트와 새 이벤트에 현지 절대 시각도 표시합니다. 다시 동기화하면 같은 시간 기준을 전체 타임라인에 적용합니다.
+- 에피네프린·제세동 횟수, 리듬(VF, 무맥성 VT, PEA, 무수축), CPR 시작, 항부정맥제, IV/IO 확보, 기도기 삽입, 카프노그래피 시작, ROSC, 재정지, 인계를 수동으로 기록합니다. [2025년 한국 심폐소생술 가이드라인 제4장 전문소생술](https://www.kdca.go.kr/bbs/kdca/49/305205/download.do)
+- 홈으로 이동해도 타이머와 로그는 계속 유지됩니다. 재부팅하거나 확인 창에서 `RESET`을 실행하면 현재 사건 기록이 지워집니다.
 
 #### EMS 타이머 버튼 조작
 - **대기(`EMS READY`) 상태**:
@@ -19,7 +20,7 @@ M5Stack **StickS3** (`ESP32-S3-PICO-1-N8R8`) 전용 경량 펌웨어입니다.
   - `B` 짧게: **타이머 시작 (`START`)**
   - `B` 길게(0.65초): EPI 간격 변경 (`3m` / `4m` / `5m`)
 - **실행(`EMS RUN` / `EMS PAUSE`) 상태**:
-  - `A` 짧게: 하단 실행 버튼 선택 이동 (`LOG EPI` → `LOG SHOCK` → `LOG ROSC` → `LOG VITAL` → `AIRWAY` → `PAUSE/RESUME` → `VIEW LOGS` → `RESET`)
+  - `A` 짧게: 하단 실행 버튼 선택 이동 (`LOG EPI` → `LOG SHOCK` → `LOG RHYTHM` → `LOG ROSC` → `MORE EVENTS` → `LOG VITAL` → `VIEW LOGS` → `PAUSE/RESUME` → `RESET`)
   - `B` 짧게: 선택된 동작 실행 (기본값 `LOG EPI`)
   - `B` 길게(0.65초): 어느 메뉴가 선택되어 있어도 **즉시 `EPI` 투여 기록 및 간격 리셋**
   - `A` 길게(0.65초): 활성 알람음 해제 / 음소거 전환
@@ -54,14 +55,14 @@ M5Stack **StickS3** (`ESP32-S3-PICO-1-N8R8`) 전용 경량 펌웨어입니다.
 
 ### 4. SETTINGS
 
-Display, Time, Timers, Air Mouse, Air Harp, Sound, Device로 나뉩니다. A로 이동하고 B로 열거나 값을 바꿉니다. A+B를 길게 누르면 한 단계 뒤로 돌아갑니다. 바꾼 값은 자동 저장됩니다.
+Display, Time, Timers, Air Mouse, Air Harp, Sound, IR Remote, Device로 나뉩니다. **Display → Theme**에서 `DARK / LIGHT`를 고릅니다. A로 이동하고 B로 열거나 값을 바꿉니다. A+B를 길게 누르면 한 단계 뒤로 돌아갑니다. 바꾼 값은 자동 저장됩니다.
 
 ---
 
 ## 화면 자동 꺼짐과 부팅 시 시간 동기화
 
 - **SETTINGS → Display → Screen Off**에서 `OFF / 30s / 1m / 3m` 중 하나를 선택합니다. 기본값은 `OFF`이며 설정은 재부팅 후에도 유지됩니다. A/B 입력이 없으면 화면이 꺼집니다. 처음 누른 A/B는 화면만 깨웁니다. 화면이 꺼져도 타이머와 HID 연결은 계속 동작하며, 새 EPI 또는 프리셋 알림이 화면을 깨웁니다.
-- **핫스팟 / Wi-Fi**는 **SETTINGS → Time → Time Sync → 1. Wi-Fi AP Push**에서 등록합니다. 휴대폰으로 `StickS3-SYNC`에 연결해 `http://192.168.4.1`을 열고, 인터넷에 연결된 2.4GHz 핫스팟이나 Wi-Fi의 SSID와 암호를 저장합니다. 다음 부팅부터 백그라운드에서 접속해 `pool.ntp.org`로 시간을 맞춥니다.
+- **핫스팟 / Wi-Fi**는 **SETTINGS → Time → Time Sync → 1. Wi-Fi AP Push**에서 등록합니다. 휴대폰으로 `StickS3-SYNC`에 연결해 `http://192.168.4.1`을 열고, 인터넷에 연결된 2.4GHz 핫스팟이나 Wi-Fi의 SSID와 암호를 저장합니다. 다음 부팅부터 핫스팟이 IP를 할당하면 `time.cloudflare.com`과 `pool.ntp.org`를 사용해 시간을 맞춥니다. 수동 Wi-Fi SNTP 화면에서는 IP 할당 실패와 NTP 응답 시간 초과를 구분해서 표시합니다.
 - **아이폰 BLE**는 **SETTINGS → Time → Time Sync → 3. BLE Time Sync**에서 B를 누릅니다. StickS3에 BLE READY가 표시되면 아이폰 **설정 → Bluetooth**에서 StickS3-Time을 선택합니다. 이미 BLE 마우스로 페어링한 아이폰에서는 기존 기기 이름이 표시될 수 있습니다. 연결되면 StickS3가 암호화된 연결에서 아이폰의 Current Time Service를 읽고, 시각을 받으면 BLE TIME SYNCED!를 표시합니다.
 - BLE 스캐너를 사용할 때는 Current Time Service (0x1805)의 Current Time (0x2A2B)에 현재 시간을 YYYY-MM-DD HH:MM:SS UTF-8 문자열로 쓸 수도 있습니다.
 - BLE를 한 번 동기화하면 저장된 Wi-Fi가 없거나 SNTP가 실패한 부팅에서 이미 페어링된 호스트의 재접속을 최대 30초 기다립니다. 자동 동기화는 호스트가 CTS를 제공하거나 재접속 시 시간을 써 주는 앱을 실행할 때 동작합니다. BLE 호스트와 StickS3의 시간대는 동일하게 맞춥니다. 수동 BLE 검색과 Wi-Fi 설정 창은 각각 최대 2분간 열립니다. 부팅 중 홈에 Wi-Fi 또는 Bluetooth 아이콘이 표시되고, 시각이 준비되면 현지 시각으로 바뀝니다.
@@ -69,13 +70,13 @@ Display, Time, Timers, Air Mouse, Air Harp, Sound, Device로 나뉩니다. A로 
 
 화면이 꺼지면 화면 갱신과 배터리 화면용 읽기를 중단하고, 조건이 맞으면 ESP32가 라이트 슬립에 들어갑니다. 효과음이 끝나면 오디오 전원을 끄며, 마우스 추적, 하프 연주 및 보정에 자이로를 사용합니다. 연결된 에어마우스의 동작과 EMS 타이머 알림은 유지됩니다. 배터리 소모를 비교할 때는 USB를 뽑고 홈에서 화면이 꺼진 뒤 같은 조건으로 측정합니다.
 
-### 4. IR REMOTE (적외선 리모컨 학습)
+### 5. IR REMOTE (적외선 리모컨 학습)
 
 홈 화면은 한 번에 메뉴 4개를 표시합니다. **A**는 다음, **A+B 짧게**는 이전, **B**는 열기입니다. 위·아래 삼각형은 해당 방향에 숨은 항목이 있을 때만 표시됩니다.
 
 **IR REMOTE**에서 빈 슬롯을 열고 원본 리모컨을 StickS3 쪽으로 향한 채 버튼을 한 번 누르세요. **TEST SEND**로 대상 기기의 반응을 확인한 뒤 **SAVE**를 선택하면 8개 슬롯에 신호를 저장해 재부팅 후에도 다시 보낼 수 있습니다. 저장된 슬롯에서 **RELEARN**으로 새 신호를 받더라도 **SAVE** 전까지 기존 신호가 유지됩니다. **A+B 길게** 누르면 한 화면 뒤로 이동합니다.
 
-내장 IR 송수신기와 38 kHz 반송파를 사용합니다. 첫 버전은 한 번 누르는 신호를 대상으로 하며, 반송파가 다른 리모컨이나 반복·여러 프레임에 의존하는 기기는 별도 검증이 필요합니다.
+내장 IR 송수신기와 38 kHz 반송파를 사용합니다. **SETTINGS → IR Remote → TX Power**에서 `NORMAL`(33%)과 `HIGH`(50%)를 고릅니다. `HIGH`는 LED 피크 전류가 일정한 상태에서 반송파 듀티를 높입니다. 발광 구간이 긴 신호 또는 빠른 연속 송신에는 `NORMAL`을 사용합니다. IR 수신 중에는 스피커를 잠시 끕니다.
 
 ## 빌드 및 플래시 방법
 

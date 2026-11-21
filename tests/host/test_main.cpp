@@ -20,17 +20,29 @@ static void test_ems_timer_stopwatch_and_pause() {
     t.start(1000);
     assert(t.state() == EmsState::Running);
     assert(t.event_count() == 1);
-    assert(std::strcmp(t.event_at(0)->label, "START") == 0);
+    assert(std::strcmp(t.event_at(0)->label, "CASE START") == 0);
+    assert(t.case_start_utc_ms() == 0);
 
     assert(t.total_elapsed_ms(61500) == 60500);
 
     t.pause(61500);
     assert(t.state() == EmsState::Paused);
     assert(t.total_elapsed_ms(120000) == 60500);
+    assert(t.event_at(0)->type == EmsEventType::TimerPause && t.event_at(0)->elapsed_ms == 60500);
+    t.log_event(EmsEventType::RhythmPvt, 63000);
+    assert(std::strcmp(t.event_at(0)->label, "RHYTHM pVT") == 0 && t.event_at(0)->elapsed_ms == 62000);
+    t.sync_clock(64050, 1760000063050LL);
+    assert(t.case_start_utc_ms() == 1760000000000LL);
+    assert(t.case_start_utc_ms() + t.event_at(0)->elapsed_ms == 1760000062000LL);
 
     t.resume(120000);
     assert(t.state() == EmsState::Running);
     assert(t.total_elapsed_ms(130000) == 70500);
+    assert(t.event_at(0)->type == EmsEventType::TimerResume && t.event_at(0)->elapsed_ms == 119000);
+    t.reset();
+    assert(t.event_count() == 0 && t.case_start_utc_ms() == 0);
+    t.start(150000, 1760000150000LL);
+    assert(t.case_start_utc_ms() == 1760000150000LL);
 
     char buf[16];
     EmsTimerCore::format_hh_mm_ss(3661000, buf, sizeof(buf));
@@ -51,7 +63,7 @@ static void test_ems_timer_epi_interval_and_overdue() {
     assert(t.epi_active());
     assert(t.epi_dose_count() == 1);
     assert(std::strcmp(t.event_at(0)->label, "EPI #1") == 0);
-    assert(t.event_at(0)->at_sec == 15);
+    assert(t.event_at(0)->elapsed_ms == 15000);
     assert(t.epi_remaining_ms(25000) == 180000);
 
     // 100s later -> 80s remaining
@@ -103,12 +115,15 @@ static void test_ems_timer_presets_and_ring_log() {
     assert(!t.preset_alarm_active());
     assert(t.preset_remaining_ms(70000) == 60000);
 
-    for (int i = 0; i < 40; i++) {
+    constexpr int shocks = EmsTimerCore::kMaxEvents + 6;
+    for (int i = 0; i < shocks; i++) {
         t.log_event(EmsEventType::Shock, 75000 + i * 1000);
     }
     assert(t.event_count() == EmsTimerCore::kMaxEvents);
-    assert(t.shock_count() == 40);
-    assert(std::strcmp(t.event_at(0)->label, "SHOCK #40") == 0);
+    assert(t.shock_count() == shocks);
+    assert(t.event_at(0)->seq == shocks);
+    assert(t.event_at(EmsTimerCore::kMaxEvents - 1)->seq == 7);
+    assert(t.event_at(EmsTimerCore::kMaxEvents) == nullptr);
 }
 
 static void test_simple_timer_core() {
@@ -463,6 +478,10 @@ static void test_ir_signal_learning() {
     assert(ir_add_pulse(frame, false, kIrSignalGapUs));
     assert(ir_finish_signal(frame));
     assert(frame.count == 67 && frame.duration_us[0] == 9000 && ir_is_nec(frame));
+    assert(ir_supports_high_power(frame));
+    IrSignal long_burst = frame;
+    long_burst.duration_us[0] = 11000;
+    assert(ir_valid_signal(long_burst) && !ir_supports_high_power(long_burst));
     const auto first_space = frame.duration_us[3 + 24 * 2];
     frame.duration_us[3 + 24 * 2] = first_space == 560 ? 1690 : 560;
     assert(ir_valid_signal(frame) && !ir_is_nec(frame));

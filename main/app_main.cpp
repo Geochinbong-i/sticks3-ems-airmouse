@@ -12,6 +12,7 @@
 #include "settings_ui.h"
 #include "time_sync.h"
 #include "ui_common.h"
+#include "ui_theme.h"
 #include "ui_menu.h"
 #include "airmouse/airmouse_ui.h"
 #include "air_harp/air_harp_ui.h"
@@ -46,10 +47,11 @@ static void draw_home_screen(M5Canvas &canvas, const MenuCursor &cursor, int64_t
     const bool ems_alarm = alarms.any();
     bool flash_on = ((now_ms / 400) % 2) == 0;
 
-    canvas.fillScreen(0x090D14);
+    const auto &theme = ui_theme();
+    canvas.fillScreen(theme.background);
 
     // Top bar with vertical battery / charging plug badge
-    uint32_t hdr_col = (ems_alarm && flash_on) ? 0xB71C1C : 0x142033;
+    const uint32_t hdr_col = (ems_alarm && flash_on) ? 0xB71C1Cu : theme.surface;
     const bool show_alarm = ems_alarm && flash_on;
     const BootTimeSync sync = time_sync_boot_source();
     const bool show_sync = !show_alarm && sync != BootTimeSync::Idle;
@@ -70,20 +72,20 @@ static void draw_home_screen(M5Canvas &canvas, const MenuCursor &cursor, int64_t
         badge_fg = 0xFF8A80;
     } else if (ems_run && !ems_alarm) {
         badge = "EMS";
-        badge_bg = 0x103B26;
-        badge_fg = 0x69F0AE;
+        badge_bg = theme.alternate;
+        badge_fg = theme.text;
     } else if (g_settings.sound_muted) {
         badge = "MUTE";
     }
     ui_draw_header(canvas, hdr_title, hdr_col,
-                   (ems_alarm && flash_on) ? 0xFFFFFF : 0x80D8FF,
+                   show_alarm ? 0xFFFFFFu : theme.accent,
                    badge, badge_bg, badge_fg, show_sync ? 21 : 4);
-    if (show_sync) draw_sync_icon(canvas, sync, 0x80D8FF);
+    if (show_sync) draw_sync_icon(canvas, sync, theme.accent);
 
     const bool simple_mode = (g_settings.timer_mode == 0);
     const MenuRow rows[kHomeItemCount] = {
         {simple_mode ? "SIMPLE TIMER" : "EMS TIMER",
-         simple_mode ? "7-Color Stamp" : "EPI / Vital / Log",
+         simple_mode ? "7-Color Stamp" : "Events / Reminders",
          0xFF5252},
         {"BLE MOUSE", "Bluetooth Gyro", 0x29B6F6},
         {"USB MOUSE", "USB-C HID Gyro", 0x00BFA5},
@@ -93,7 +95,7 @@ static void draw_home_screen(M5Canvas &canvas, const MenuCursor &cursor, int64_t
     };
 
     ui_draw_menu(canvas, rows, kHomeItemCount, cursor);
-    ui_draw_footer2(canvas, "A Next   B Open", "A+B Prev  Hold A Mute");
+    ui_draw_themed_footer(canvas, "A Next   B Open", "A+B Prev  Hold A Mute");
     ui_present(canvas);
 }
 
@@ -111,6 +113,7 @@ extern "C" void app_main(void) {
     auto cfg = M5.config();
     cfg.internal_mic = false;
     M5.begin(cfg);
+    ui_init_backlight();
     power_save_init();
     imu_set_idle();
     ESP_LOGI(TAG, "M5.begin ok (%dx%d imu=%d spk=%d rtc=%d)",
@@ -151,7 +154,7 @@ extern "C" void app_main(void) {
             last_draw_ms = 0;
         } else if (action == MenuAction::Select) {
             const auto item = static_cast<HomeItem>(cursor.selected);
-            if (item != HomeItem::AirHarp && item != HomeItem::IrRemote) sound_fx_confirm();
+            if (item != HomeItem::AirHarp) sound_fx_confirm();
             canvas.deleteSprite();
             switch (item) {
                 case HomeItem::Timer:

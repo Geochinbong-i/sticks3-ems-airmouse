@@ -16,12 +16,13 @@ public:
     IrDevice(const IrDevice &) = delete;
     IrDevice &operator=(const IrDevice &) = delete;
 
-    bool open();
+    bool open(bool high_power);
     bool receive();
     IrReceive poll_receive(IrSignal &signal);
     void cancel_receive();
     bool send(const IrSignal &signal);
     bool sending_done();
+    bool sent_at_high_power() const { return carrier_high_; }
 
 private:
     QueueHandle_t events_ = nullptr;
@@ -31,4 +32,6 @@ private:
     bool rx_enabled_ = false;
     bool tx_enabled_ = false;
     bool restore_power_ = false;
+    bool high_power_ = false;
+    bool carrier_high_ = false;
 };

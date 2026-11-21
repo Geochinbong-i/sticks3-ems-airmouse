@@ -3,16 +3,21 @@
 #include "app_settings.h"
 #include "input_util.h"
 #include "sound_fx.h"
+#include "time_sync.h"
 #include "ui_common.h"
+#include "ui_theme.h"
 
 #include "M5Unified.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
+#include <sys/time.h>
 
 static EmsTimerCore s_timer;
 static std::atomic<unsigned> s_alarm_sequence{0};
@@ -30,6 +35,19 @@ public:
     TimerLock(const TimerLock &) = delete;
     TimerLock &operator=(const TimerLock &) = delete;
 };
+
+static int64_t system_utc_ms() {
+    struct timeval tv{};
+    if (!time_sync_is_valid() || gettimeofday(&tv, nullptr) != 0) return 0;
+    return (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+}
+
+void ems_timer_sync_clock() {
+    const int64_t now_ms = input_now_ms();
+    const int64_t utc_ms = system_utc_ms();
+    TimerLock lock;
+    s_timer.sync_clock(now_ms, utc_ms);
+}
 
 static void ems_timer_bg_task(void *arg) {
     (void)arg;
@@ -75,42 +93,21 @@ EmsAlarmState ems_timer_active_alarms() {
 }
 
 enum class EmsAction : int {
-    Epi = 0,
-    Shock = 1,
-    Rosc = 2,
-    Vital = 3,
-    Airway = 4,
-    PauseResume = 5,
-    Logs = 6,
-    Reset = 7,
-    Count = 8,
+    Epi, Shock, Rhythm, Rosc, Other, Vital, Logs, PauseResume, Reset, Count,
 };
 
 static const char *action_name(EmsAction act, EmsState st) {
     switch (act) {
         case EmsAction::Epi: return "LOG EPI";
         case EmsAction::Shock: return "LOG SHOCK";
+        case EmsAction::Rhythm: return "LOG RHYTHM";
         case EmsAction::Rosc: return "LOG ROSC";
         case EmsAction::Vital: return "LOG VITAL";
-        case EmsAction::Airway: return "AIRWAY";
+        case EmsAction::Other: return "MORE EVENTS";
         case EmsAction::PauseResume: return (st == EmsState::Paused) ? "RESUME" : "PAUSE";
         case EmsAction::Logs: return "VIEW LOGS";
         case EmsAction::Reset: return "RESET";
         default: return "";
-    }
-}
-
-static uint32_t action_color(EmsAction act) {
-    switch (act) {
-        case EmsAction::Epi: return 0xC62828;
-        case EmsAction::Shock: return 0xE65100;
-        case EmsAction::Rosc: return 0x2E7D32;
-        case EmsAction::Vital: return 0x0277BD;
-        case EmsAction::Airway: return 0x4527A0;
-        case EmsAction::PauseResume: return 0x546E7A;
-        case EmsAction::Logs: return 0x37474F;
-        case EmsAction::Reset: return 0x6D1B1B;
-        default: return 0x333333;
     }
 }
 
@@ -134,46 +131,135 @@ static bool confirm_reset_modal(M5Canvas &canvas) {
             continue;
         }
 
+        const auto &theme = ui_theme();
         int w = canvas.width();
-        canvas.fillScreen(0x140A0A);
-        ui_draw_header(canvas, "RESET EMS", 0x2B1212, 0xFF8A80);
+        canvas.fillScreen(theme.background);
+        ui_draw_header(canvas, "RESET EMS", theme.surface, theme.danger);
 
-        canvas.drawRoundRect(6, 32, w - 12, 168, 7, 0xFF5252);
-        canvas.fillRoundRect(7, 33, w - 14, 166, 6, 0x1B0D0D);
+        canvas.drawRoundRect(6, 32, w - 12, 168, 7, theme.danger);
+        canvas.fillRoundRect(7, 33, w - 14, 166, 6, theme.surface);
 
         canvas.setFont(&fonts::Font2);
         canvas.setTextSize(1);
         canvas.setTextWrap(false);
 
-        canvas.setTextColor(0xFF8A80, 0x1B0D0D);
+        canvas.setTextColor(theme.danger, theme.surface);
         canvas.setCursor(14, 42);
         canvas.print("RESET EMS?");
 
-        canvas.setTextColor(0xE2E8F0, 0x1B0D0D);
+        canvas.setTextColor(theme.text, theme.surface);
         canvas.setCursor(14, 68);
         canvas.print("Clears timer and");
         canvas.setCursor(14, 84);
         canvas.print("all event logs.");
 
-        canvas.fillRoundRect(12, 114, w - 24, 30, 4, 0x183834);
-        canvas.setTextColor(0x80CBC4, 0x183834);
+        canvas.fillRoundRect(12, 114, w - 24, 30, 4, theme.alternate);
+        canvas.setTextColor(theme.text, theme.alternate);
         canvas.setCursor(18, 121);
         canvas.print("A : Keep Data");
 
-        canvas.fillRoundRect(12, 152, w - 24, 30, 4, 0x6A1616);
-        canvas.setTextColor(0xFFCDD2, 0x6A1616);
+        canvas.fillRoundRect(12, 152, w - 24, 30, 4, theme.alternate);
+        canvas.setTextColor(theme.danger, theme.alternate);
         canvas.setCursor(18, 159);
         canvas.print("B : Reset All");
 
-        ui_draw_footer2(canvas, "A: Cancel  B: Clear", "Hold A+B : Go Back", 0x140A0A, 0xC09E9E);
+        ui_draw_themed_footer(canvas, "A: Cancel  B: Clear", "Hold A+B : Go Back");
         ui_present(canvas);
         input_idle_delay(30);
     }
 }
 
+static constexpr size_t kLogRows = 6;
+
+static void format_elapsed(uint32_t seconds, char *buf, size_t len) {
+    if (seconds < 3600) {
+        std::snprintf(buf, len, "+%02u:%02u", (unsigned)(seconds / 60), (unsigned)(seconds % 60));
+    } else {
+        std::snprintf(buf, len, "+%u:%02u:%02u", (unsigned)(seconds / 3600),
+                      (unsigned)(seconds / 60 % 60), (unsigned)(seconds % 60));
+    }
+}
+
+static void draw_logs(M5Canvas &canvas, size_t page) {
+    EmsEvent events[kLogRows]{};
+    size_t total;
+    int64_t start_utc_ms;
+    const size_t offset = page * kLogRows;
+    {
+        TimerLock lock;
+        start_utc_ms = s_timer.case_start_utc_ms();
+        total = s_timer.event_count();
+        for (size_t i = 0; i < kLogRows && offset + i < total; ++i) {
+            events[i] = *s_timer.event_at(offset + i);
+        }
+    }
+
+    const auto &theme = ui_theme();
+    const int w = canvas.width();
+    const size_t pages = std::max<size_t>(1, (total + kLogRows - 1) / kLogRows);
+    canvas.fillScreen(theme.background);
+    char title[24];
+    std::snprintf(title, sizeof(title), "LOGS %u/%u", (unsigned)(page + 1), (unsigned)pages);
+    ui_draw_header(canvas, title, theme.surface, theme.text);
+
+    canvas.setTextDatum(TL_DATUM);
+    canvas.setTextSize(1);
+    canvas.setFont(&fonts::Font0);
+    canvas.setTextColor(theme.muted, theme.background);
+    char started[24] = "Clock not set";
+    if (start_utc_ms > 0) {
+        const time_t time = (time_t)(start_utc_ms / 1000);
+        struct tm local{};
+        localtime_r(&time, &local);
+        std::strftime(started, sizeof(started), "%Y-%m-%d %H:%M:%S", &local);
+    }
+    if (total > 0) canvas.drawString(started, 5, 28);
+
+    if (total == 0) {
+        canvas.setFont(&fonts::Font2);
+        canvas.drawString("No events logged", 12, 96);
+    } else {
+        for (size_t i = 0; i < kLogRows && offset + i < total; ++i) {
+            const auto &event = events[i];
+            const int y = 42 + i * 27;
+            const uint32_t bg = i % 2 == 0 ? theme.surface : theme.alternate;
+            canvas.fillRect(3, y, w - 6, 26, bg);
+
+            const uint32_t fg = event.type == EmsEventType::Shock ? theme.warning
+                              : event.type == EmsEventType::Epi ? theme.danger : theme.text;
+            canvas.setFont(&fonts::Font2);
+            canvas.setTextColor(fg, bg);
+            canvas.drawString(event.label, 6, y + 1);
+
+            char elapsed[20];
+            format_elapsed(event.elapsed_ms / 1000, elapsed, sizeof(elapsed));
+            char when[16]{};
+            if (start_utc_ms > 0) {
+                const time_t time = (time_t)((start_utc_ms + event.elapsed_ms) / 1000);
+                struct tm local{};
+                localtime_r(&time, &local);
+                std::strftime(when, sizeof(when), "%m/%d %H:%M:%S", &local);
+            }
+            canvas.setFont(&fonts::Font0);
+            canvas.setTextColor(theme.muted, bg);
+            const int when_width = canvas.textWidth(when);
+            // For long cases, show the absolute time without repeating the date in each row.
+            const char *wall_time = when_width + canvas.textWidth(elapsed) + 4 > w - 10 ? when + 6 : when;
+            canvas.drawString(elapsed, 6, y + 17);
+            canvas.drawRightString(wall_time, w - 5, y + 17);
+        }
+    }
+
+    ui_draw_themed_footer(canvas, pages > 1 ? "A: Next pg  B: Back" : "B: Back",
+                          start_utc_ms > 0 ? "Elapsed / Local time" : "+ Time since start");
+    ui_present(canvas);
+}
+
 static void show_logs_modal(M5Canvas &canvas) {
     input_wait_all_release();
-    size_t offset = 0;
+    size_t page = 0;
+    bool redraw = true;
+    int64_t last_start_utc_ms = 0;
     while (true) {
         input_update();
         if (input_ab_held(400) || input_b_pressed()) {
@@ -181,65 +267,103 @@ static void show_logs_modal(M5Canvas &canvas) {
             input_wait_all_release();
             return;
         }
-
-        size_t total = 0;
+        const bool next_page = input_a_pressed();
+        size_t pages = 0;
         {
             TimerLock lock;
-            total = s_timer.event_count();
-        }
-        if (input_a_pressed() && total > 8) {
-            offset = (offset + 4 < total) ? (offset + 4) : 0;
-            sound_fx_click();
-        }
-
-        int h = canvas.height();
-        if (!ui_screen_is_on()) {
-            input_idle_delay(25);
-            continue;
-        }
-
-        canvas.fillScreen(0x0B0F17);
-
-        char lhdr[24];
-        std::snprintf(lhdr, sizeof(lhdr), "LOGS (%u)", (unsigned)total);
-        ui_draw_header(canvas, lhdr, 0x1C2838, 0xFFFFFF);
-
-        canvas.setFont(&fonts::Font2);
-        canvas.setTextSize(1);
-        canvas.setTextWrap(false);
-
-        if (total == 0) {
-            canvas.setTextColor(0x8899AA, 0x0B0F17);
-            canvas.setCursor(14, 96);
-            canvas.print("No events logged");
-        } else {
-            TimerLock lock;
-            total = s_timer.event_count();
-            int y = 26;
-            for (size_t i = offset; i < total && y < h - 46; i++) {
-                const EmsEvent *ev = s_timer.event_at(i);
-                if (!ev) break;
-                int mm = (int)(ev->at_sec / 60);
-                int ss = (int)(ev->at_sec % 60);
-                uint32_t col = 0xE0E6ED;
-                if (ev->type == EmsEventType::Epi) col = 0xFF8A80;
-                else if (ev->type == EmsEventType::Shock) col = 0xFFD180;
-                else if (ev->type == EmsEventType::Rosc) col = 0x69F0AE;
-                else if (ev->type == EmsEventType::Vital) col = 0x80D8FF;
-
-                canvas.setTextColor(0x78909C, 0x0B0F17);
-                canvas.setCursor(4, y);
-                canvas.printf("%02d:%02d", mm, ss);
-                canvas.setTextColor(col, 0x0B0F17);
-                canvas.setCursor(48, y);
-                canvas.print(ev->label);
-                y += 18;
+            if (next_page) pages = (s_timer.event_count() + kLogRows - 1) / kLogRows;
+            if (last_start_utc_ms != s_timer.case_start_utc_ms()) {
+                last_start_utc_ms = s_timer.case_start_utc_ms();
+                redraw = true;
             }
         }
+        if (next_page) {
+            if (pages > 1) {
+                page = (page + 1) % pages;
+                sound_fx_click();
+            }
+            redraw = true;
+        }
+        if (!ui_screen_is_on()) redraw = true;
+        if (redraw && ui_screen_is_on()) {
+            draw_logs(canvas, page);
+            redraw = false;
+        }
+        input_idle_delay(25);
+    }
+}
 
-        ui_draw_footer2(canvas, "A: NextPg  B: Back", "Hold A+B : Close");
-        ui_present(canvas);
-        input_idle_delay(30);
+struct EventChoice {
+    const char *label;
+    EmsEventType event;
+};
+
+static constexpr EventChoice kRhythmEvents[] = {
+    {"VF", EmsEventType::RhythmVf}, {"Pulseless VT", EmsEventType::RhythmPvt},
+    {"PEA", EmsEventType::RhythmPea}, {"Asystole", EmsEventType::RhythmAsystole},
+};
+static constexpr EventChoice kOtherEvents[] = {
+    {"CPR start", EmsEventType::CprStart}, {"Amiodarone", EmsEventType::Amiodarone},
+    {"Lidocaine", EmsEventType::Lidocaine}, {"IV access", EmsEventType::IvAccess},
+    {"IO access", EmsEventType::IoAccess}, {"Airway placed", EmsEventType::Airway},
+    {"Capno start", EmsEventType::Capnography}, {"Re-arrest", EmsEventType::Rearrest},
+    {"Handoff", EmsEventType::Handoff},
+};
+
+template <size_t Count>
+static bool choose_event(M5Canvas &canvas, const char *title, const EventChoice (&choices)[Count]) {
+    input_wait_all_release();
+    size_t selected = 0;
+    bool redraw = true;
+    while (true) {
+        input_update();
+        const bool confirm = input_b_pressed();
+        if (input_ab_held(400) || (confirm && selected == Count)) {
+            sound_fx_click();
+            input_wait_all_release();
+            return false;
+        }
+        if (input_a_pressed()) {
+            selected = (selected + 1) % (Count + 1);
+            sound_fx_click();
+            redraw = true;
+        } else if (confirm) {
+            {
+                TimerLock lock;
+                s_timer.log_event(choices[selected].event, input_now_ms());
+            }
+            sound_fx_confirm();
+            input_wait_all_release();
+            return true;
+        }
+
+        const auto &theme = ui_theme();
+        if (!ui_screen_is_on()) redraw = true;
+        if (redraw && ui_screen_is_on()) {
+            canvas.fillScreen(theme.background);
+            ui_draw_header(canvas, title, theme.surface, theme.text);
+            canvas.setFont(&fonts::Font2);
+            constexpr size_t rows = 8;
+            const size_t first = selected < rows ? 0 : selected - rows + 1;
+            const int center = canvas.width() / 2;
+            if (first > 0) canvas.fillTriangle(center, 24, center - 4, 28, center + 4, 28, theme.accent);
+            if (first + rows <= Count) {
+                canvas.fillTriangle(center, 205, center - 4, 201, center + 4, 201, theme.accent);
+            }
+            for (size_t i = first; i < first + rows && i <= Count; ++i) {
+                const int y = 31 + (int)(i - first) * 21;
+                const bool focused = i == selected;
+                const auto bg = focused ? theme.selected : (i % 2 == 0 ? theme.surface : theme.alternate);
+                canvas.fillRect(3, y, canvas.width() - 6, 20, bg);
+                if (focused) canvas.fillRect(3, y, 3, 20, theme.on_selected);
+                canvas.setTextColor(focused ? theme.on_selected : theme.text, bg);
+                canvas.drawString(i == Count ? "< BACK" : choices[i].label, 9, y + 2);
+            }
+            ui_draw_themed_footer(canvas, "A: Next   B: Log", "Hold A+B : Back");
+            ui_present(canvas);
+            redraw = false;
+        }
+        input_idle_delay(25);
     }
 }
 
@@ -282,14 +406,14 @@ static void draw_ems_frame(M5Canvas &canvas, int64_t now_ms, EmsAction sel_actio
         }
     }
 
-    canvas.fillScreen(0x090D14);
+    const auto &theme = ui_theme();
+    canvas.fillScreen(theme.background);
 
     // 1. Top Bar with vertical battery / plug badge
-    uint32_t hdr_col = (st == EmsState::Running) ? 0x143326
-                     : (st == EmsState::Paused ? 0x4A360D : 0x1A2433);
     const char *st_title = (st == EmsState::Running) ? "EMS RUN"
                          : (st == EmsState::Paused ? "EMS PAUSE" : "EMS READY");
-    ui_draw_header(canvas, st_title, hdr_col, 0xFFFFFF,
+    ui_draw_header(canvas, st_title, theme.surface,
+                   st == EmsState::Paused ? theme.warning : theme.text,
                    g_settings.sound_muted ? "M" : nullptr);
 
     // 2. Total Incident Stopwatch
@@ -298,34 +422,33 @@ static void draw_ems_frame(M5Canvas &canvas, int64_t now_ms, EmsAction sel_actio
     canvas.setFont(&fonts::Font2);
     canvas.setTextSize(1);
     canvas.setTextWrap(false);
-    canvas.setTextColor(0x90A4AE, 0x090D14);
+    canvas.setTextColor(theme.muted, theme.background);
     canvas.setCursor(4, 24);
-    canvas.print("TOTAL");
+    canvas.print("TIMER");
     canvas.setCursor(w - 50, 24);
     canvas.printf("SHK:%d", shock_cnt);
 
     canvas.setFont(&fonts::Font0);
     canvas.setTextSize(2);
-    canvas.setTextColor(0xFFFFFF, 0x090D14);
+    canvas.setTextColor(theme.text, theme.background);
     canvas.setCursor((w - (int)std::strlen(tot_buf) * 12) / 2, 39);
     canvas.print(tot_buf);
 
     // 3. Epinephrine Interval Card
-    uint32_t epi_bg = 0x121B26;
-    uint32_t epi_border = 0x2A3D54;
-    uint32_t epi_fg = 0x69F0AE;
+    uint32_t epi_bg = theme.surface;
+    uint32_t epi_border = theme.border;
+    uint32_t epi_fg = theme.text;
     if (epi_act) {
         if (epi_overdue) {
-            epi_bg = flash_on ? 0x9E1414 : 0x3D0B0B;
-            epi_border = 0xFF5252;
-            epi_fg = 0xFFFFFF;
+            epi_bg = flash_on ? 0x9E1414 : theme.surface;
+            epi_border = flash_on ? 0xFFFFFF : theme.danger;
+            epi_fg = flash_on ? 0xFFFFFF : theme.danger;
         } else if (epi_rem <= 30000) {
-            epi_bg = 0x2E2208;
-            epi_border = 0xFFB300;
-            epi_fg = 0xFFD54F;
+            epi_border = theme.warning;
+            epi_fg = theme.warning;
         }
     } else {
-        epi_fg = 0x80CBC4;
+        epi_fg = theme.accent;
     }
 
     canvas.fillRoundRect(4, 58, w - 8, 56, 5, epi_bg);
@@ -333,7 +456,7 @@ static void draw_ems_frame(M5Canvas &canvas, int64_t now_ms, EmsAction sel_actio
 
     canvas.setFont(&fonts::Font2);
     canvas.setTextSize(1);
-    canvas.setTextColor(0xCFD8DC, epi_bg);
+    canvas.setTextColor(epi_overdue && flash_on ? 0xFFFFFF : theme.muted, epi_bg);
     canvas.setCursor(9, 60);
     canvas.printf("EPI %dm", epi_int_sec / 60);
 
@@ -361,23 +484,25 @@ static void draw_ems_frame(M5Canvas &canvas, int64_t now_ms, EmsAction sel_actio
     canvas.setTextDatum(TL_DATUM);
 
     int bar_x = 9, bar_y = 107, bar_w = w - 18;
-    canvas.fillRect(bar_x, bar_y, bar_w, 4, 0x0B0F17);
+    canvas.fillRect(bar_x, bar_y, bar_w, 4, theme.alternate);
     if (epi_act) {
         int64_t tot_epi = (int64_t)epi_int_sec * 1000;
         int fill = epi_overdue ? bar_w : (int)((epi_rem * bar_w) / tot_epi);
         if (fill < 0) fill = 0;
         if (fill > bar_w) fill = bar_w;
-        canvas.fillRect(bar_x, bar_y, fill, 4, epi_overdue ? 0xFF5252 : epi_fg);
+        canvas.fillRect(bar_x, bar_y, fill, 4, epi_fg);
     }
 
     // 4. Countdown Preset Card (Vital / Reassess)
-    uint32_t pre_bg = (pre_done && flash_on) ? 0x0D47A1 : 0x101822;
+    const bool pre_highlight = pre_done && flash_on;
+    const uint32_t pre_bg = pre_highlight ? theme.selected : theme.surface;
+    const uint32_t pre_fg = pre_highlight ? theme.on_selected : theme.accent;
     canvas.fillRoundRect(4, 117, w - 8, 28, 5, pre_bg);
-    canvas.drawRoundRect(4, 117, w - 8, 28, 5, pre_done ? 0x40C4FF : 0x263547);
+    canvas.drawRoundRect(4, 117, w - 8, 28, 5, pre_done ? pre_fg : theme.border);
 
     canvas.setFont(&fonts::Font2);
     canvas.setTextSize(1);
-    canvas.setTextColor(0x90CAF9, pre_bg);
+    canvas.setTextColor(pre_fg, pre_bg);
     canvas.setCursor(9, 121);
     if (!pre_on) {
         canvas.print("PRESET: OFF");
@@ -394,14 +519,14 @@ static void draw_ems_frame(M5Canvas &canvas, int64_t now_ms, EmsAction sel_actio
         }
         canvas.setFont(&fonts::Font2);
         canvas.setTextSize(1);
-        canvas.setTextColor(pre_done ? 0xFFFFFF : 0x80D8FF, pre_bg);
+        canvas.setTextColor(pre_fg, pre_bg);
         canvas.setCursor(w - canvas.textWidth(pbuf) - 9, 121);
         canvas.print(pbuf);
 
         int64_t p_tot = (int64_t)pre_sec * 1000;
         int p_fill = (int)((pre_rem * (w - 18)) / p_tot);
-        canvas.fillRect(9, 139, w - 18, 3, 0x090D14);
-        canvas.fillRect(9, 139, p_fill, 3, pre_done ? 0xFFFFFF : 0x40C4FF);
+        canvas.fillRect(9, 139, w - 18, 3, theme.alternate);
+        canvas.fillRect(9, 139, p_fill, 3, pre_fg);
     }
 
     // 5. Recent Events Mini-Strip (up to 2 newest in Font2)
@@ -409,43 +534,48 @@ static void draw_ems_frame(M5Canvas &canvas, int64_t now_ms, EmsAction sel_actio
     canvas.setTextSize(1);
     int ey = 148;
     if (ev_cnt == 0) {
-        canvas.setTextColor(0x78909C, 0x090D14);
+        canvas.setTextColor(theme.muted, theme.background);
         canvas.setCursor(8, ey + 6);
         canvas.print("Press B to START");
     } else {
         for (size_t i = 0; i < 2 && i < ev_cnt; i++) {
             const EmsEvent &ev = recent[i];
-            canvas.setTextColor(0x78909C, 0x090D14);
-            canvas.setCursor(6, ey);
-            canvas.printf("%02u:%02u", (unsigned)(ev.at_sec / 60), (unsigned)(ev.at_sec % 60));
-            canvas.setTextColor(i == 0 ? 0xECEFF1 : 0x90A4AE, 0x090D14);
-            canvas.setCursor(48, ey);
-            canvas.print(ev.label);
+            char elapsed[20];
+            format_elapsed(ev.elapsed_ms / 1000, elapsed, sizeof(elapsed));
+            canvas.setFont(&fonts::Font0);
+            canvas.setTextColor(theme.muted, theme.background);
+            canvas.drawString(elapsed, 6, ey + 5);
+            canvas.setFont(&fonts::Font2);
+            canvas.setTextColor(theme.text, theme.background);
+            const int x = std::max(48, 9 + 6 * (int)std::strlen(elapsed));
+            const int width = canvas.textWidth(ev.label);
+            if (width > w - x - 4) canvas.setTextSize(float(w - x - 4) / width, 1.0f);
+            canvas.drawString(ev.label, x, ey);
+            canvas.setTextSize(1);
             ey += 15;
         }
     }
 
     // 6. Action Bar + Enlarged 2-line Footer
     if (st == EmsState::Idle) {
-        canvas.fillRoundRect(4, h - 56, w - 8, 22, 4, 0x1B5E20);
+        canvas.fillRect(4, h - 56, w - 8, 22, theme.selected);
         canvas.setFont(&fonts::Font2);
-        canvas.setTextColor(0xFFFFFF, 0x1B5E20);
+        canvas.setTextColor(theme.on_selected, theme.selected);
         canvas.setTextDatum(MC_DATUM);
         canvas.drawString("B: START TIMER", w / 2, h - 45);
         canvas.setTextDatum(TL_DATUM);
-        ui_draw_footer2(canvas, "A:Preset  HoldB:EPI", "Hold A+B : Go Home");
+        ui_draw_themed_footer(canvas, "A:Preset  HoldB:EPI", "Hold A+B : Go Home");
     } else {
-        uint32_t acol = action_color(sel_action);
         const char *aname = action_name(sel_action, st);
-        canvas.fillRoundRect(4, h - 56, w - 8, 22, 4, acol);
+        canvas.fillRect(4, h - 56, w - 8, 22, theme.selected);
         canvas.setFont(&fonts::Font2);
-        canvas.setTextColor(0xFFFFFF, acol);
+        canvas.setTextColor(theme.on_selected, theme.selected);
         char act_line[32];
         std::snprintf(act_line, sizeof(act_line), "[ %s ]", aname);
         canvas.setTextDatum(MC_DATUM);
         canvas.drawString(act_line, w / 2, h - 45);
         canvas.setTextDatum(TL_DATUM);
-        ui_draw_footer2(canvas, "A:Act  B:OK  HB:EPI", "Hold A+B : Go Home");
+        ui_draw_themed_footer(canvas, "A:Act  B:OK  HB:EPI", "Hold A+B : Go Home");
     }
 
     ui_present(canvas);
@@ -568,7 +698,7 @@ void ems_timer_ui_run() {
                     TimerLock lock;
                     cur_st = s_timer.state();
                     if (cur_st == EmsState::Idle) {
-                        s_timer.start(now_ms);
+                        s_timer.start(now_ms, system_utc_ms());
                     }
                 }
                 if (cur_st == EmsState::Idle) {
@@ -607,13 +737,11 @@ void ems_timer_ui_run() {
                             sound_fx_confirm();
                             sel_action = EmsAction::Epi;
                             break;
-                        case EmsAction::Airway:
-                            {
-                                TimerLock lock;
-                                s_timer.log_event(EmsEventType::Airway, now_ms);
-                            }
-                            sound_fx_confirm();
-                            sel_action = EmsAction::Epi;
+                        case EmsAction::Rhythm:
+                            if (choose_event(canvas, "LOG RHYTHM", kRhythmEvents)) sel_action = EmsAction::Epi;
+                            break;
+                        case EmsAction::Other:
+                            if (choose_event(canvas, "MORE EVENTS", kOtherEvents)) sel_action = EmsAction::Epi;
                             break;
                         case EmsAction::PauseResume:
                             {

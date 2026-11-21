@@ -6,6 +6,7 @@
 #include "sound_fx.h"
 #include "timer/ems_timer_ui.h"
 #include "ui_menu.h"
+#include "ui_theme.h"
 
 #include <array>
 
@@ -38,17 +39,18 @@ const char *signal_label(const IrSignal &signal) {
 
 void draw_screen(M5Canvas &canvas, Page page, const MenuRow *slots,
                  const MenuCursor &slot, const MenuCursor &action, const char *status) {
-    canvas.fillScreen(0x090D14);
+    const auto &theme = ui_theme();
+    canvas.fillScreen(theme.background);
     const auto alarms = ems_timer_active_alarms();
     ui_draw_header(canvas, alarms.any() ? alarms.title() : "IR REMOTE",
-                   alarms.any() ? 0xB71C1C : 0x142033, 0xFFFFFF);
+                   alarms.any() ? 0xB71C1C : theme.surface, alarms.any() ? 0xFFFFFF : theme.text);
     switch (page) {
         case Page::Slots: ui_draw_menu(canvas, slots, kIrSlotCount, slot); break;
         case Page::Listening: ui_draw_menu(canvas, &kListening, 1, MenuCursor{-1, 0}); break;
         case Page::Captured: ui_draw_menu(canvas, kCaptured, kCapturedCount, action); break;
         case Page::Saved: ui_draw_menu(canvas, kSaved, kSavedCount, action); break;
     }
-    ui_draw_footer2(canvas, page == Page::Listening ? "Point at Stick S3" : "A Next   B OK",
+    ui_draw_themed_footer(canvas, page == Page::Listening ? "Point at Stick S3" : "A Next   B OK",
                     status ? status : "Hold A+B Back");
     ui_present(canvas);
 }
@@ -59,7 +61,7 @@ void ir_ui_run() {
     if (!canvas.createSprite(M5.Display.width(), M5.Display.height())) return;
 
     IrDevice device;
-    const bool ready = device.open();
+    const bool ready = device.open(g_settings.ir_tx_high);
     IrSignal signal;
     std::array<MenuRow, kIrSlotCount> slots{};
     for (int i = 0; i < kIrSlotCount; ++i) {
@@ -122,6 +124,7 @@ void ir_ui_run() {
                 const auto result = device.poll_receive(signal);
                 if (result == IrReceive::Captured) {
                     end_capture(Page::Captured, nullptr);
+                    sound_fx_confirm();
                 } else if (result == IrReceive::Rejected && !device.receive()) {
                     end_capture(Page::Slots, "RX unavailable");
                 }
@@ -129,19 +132,26 @@ void ir_ui_run() {
         }
         if (sending && device.sending_done()) {
             sending = false;
-            status = "Signal sent";
+            status = device.sent_at_high_power() ? "Sent (High)"
+                     : g_settings.ir_tx_high ? "Sent (Normal)" : "Signal sent";
+            sound_fx_confirm();
             next_draw = 0;
         }
 
         const auto press = buttons.update(input_a_down(), input_b_down(), now, false);
         if (press == MenuAction::Back) {
-            if (page == Page::Slots) break;
+            if (page == Page::Slots) {
+                sound_fx_click();
+                break;
+            }
             if (page == Page::Listening) stop_receive();
+            sound_fx_click();
             page = Page::Slots;
             status = nullptr;
             next_draw = 0;
         } else if (!sending && page != Page::Listening) {
             if (press == MenuAction::Next || press == MenuAction::Previous) {
+                sound_fx_click();
                 const int direction = press == MenuAction::Next ? 1 : -1;
                 if (page == Page::Slots) slot.move(direction, kIrSlotCount);
                 else action.move(direction, page == Page::Captured ? kCapturedCount : kSavedCount);
@@ -151,6 +161,7 @@ void ir_ui_run() {
                 next_draw = 0;
                 if (page == Page::Slots) {
                     if (ir_load_slot(slot.selected, signal)) {
+                        sound_fx_confirm();
                         action = {};
                         page = Page::Saved;
                         status = nullptr;
@@ -161,6 +172,7 @@ void ir_ui_run() {
                     send();
                 } else if (page == Page::Captured && action.selected == 1) {
                     if (ir_save_slot(slot.selected, signal)) {
+                        sound_fx_confirm();
                         slots[slot.selected].subtitle = signal_label(signal);
                         page = Page::Slots;
                         status = "Saved";

@@ -10,6 +10,7 @@ enum class TimerMode : int {
 struct AppSettings {
     int timer_mode = 0;         // 0=Simple Timer, 1=EMS Timer
     int brightness_pct = 80;    // 20, 40, 60, 80, 100
+    bool light_theme = false;
     int screen_off_sec = 0;     // 0=Off, 30, 60, 180
     int tz_offset_hours = 9;    // -12..+14 (default +9 KST)
 
@@ -23,6 +24,7 @@ struct AppSettings {
     bool air_natural_scroll = false;
 
     bool harp_toggle = false;
+    bool ir_tx_high = false;
 
     bool imu_abs_valid = false;
     float imu_abs_gx = 0.0f;
