@@ -284,7 +284,7 @@ static void test_air_harp_continuous_controls() {
     assert(!harp.set_neutral(0, 0, 0.2f, 0));
     assert(harp.set_neutral(0, 0, 1, 0));
     assert(harp.voice().note == AirHarpVoice::center_note);
-    assert(harp.voice().duty == AirHarpVoice::center_duty);
+    assert(harp.voice().volume_pct == AirHarpVoice::center_volume_pct);
 
     // A turn too slow to register as a snap still passes every semitone.
     int64_t now = 0;
@@ -295,7 +295,7 @@ static void test_air_harp_continuous_controls() {
             now += 10;
             harp.sample_gyro(0, 0, degrees_per_sec, false, now);
             played[harp.voice().note] = true;
-            assert(harp.voice().duty == AirHarpVoice::center_duty);
+            assert(harp.voice().volume_pct == AirHarpVoice::center_volume_pct);
         }
     };
     sweep_yaw(9, 5100);
@@ -310,7 +310,8 @@ static void test_air_harp_continuous_controls() {
     air_harp_note_label(13, note);
     assert(std::strcmp(note, "C#3") == 0);
     air_harp_note_label(kAirHarpNoteCount - 1, note);
-    assert(std::strcmp(note, "B4") == 0);
+    assert(std::strcmp(note, "B3") == 0);
+    assert(std::fabs(air_harp_note_hz(kAirHarpNoteCount - 1) - 246.9417f) < 0.001f);
     assert(std::fabs(air_harp_note_hz(0) - 65.4064f) < 0.001f);
     assert(std::fabs(air_harp_note_hz(13) / air_harp_note_hz(12) - 1.059463f) < 0.00001f);
 
@@ -319,27 +320,30 @@ static void test_air_harp_continuous_controls() {
     sweep_yaw(0.25f, 20000);
     assert(harp.voice().note == AirHarpVoice::center_note);
 
-    // Sweep both ways from an upright playing pose through all 100 values.
+    // Sweep both ways from an upright pose through every volume setting.
     assert(harp.set_neutral(0, 1, 0, now));
-    bool duties[kAirHarpDutyCount]{};
+    bool volumes[kAirHarpMaxVolumePct + 1]{};
     auto tilt = [&](float degrees, bool flip) {
         const float angle = degrees * 0.0174532925f;
         harp.sample_accel(0, std::cos(angle), -std::sin(angle));
         now += 10;
         harp.sample_gyro(0, 0, 0, flip, now);
-        duties[harp.voice().duty] = true;
+        volumes[harp.voice().volume_pct] = true;
         assert(harp.voice().note == AirHarpVoice::center_note);
     };
     for (int i = 0; i >= -400; --i) tilt(i * 0.1f, false);
-    assert(harp.voice().duty == 0);
+    assert(harp.voice().volume_pct == 0);
     for (int i = -400; i <= 400; ++i) tilt(i * 0.1f, false);
-    assert(harp.voice().duty == kAirHarpDutyCount - 1);
-    for (bool visited : duties) assert(visited);
+    assert(harp.voice().volume_pct == kAirHarpMaxVolumePct);
+    for (bool visited : volumes) assert(visited);
     for (int i = 0; i < 35; ++i) tilt(40, true);
-    assert(harp.voice().duty == 0);
-    assert(air_harp_duty_fraction(0) == 0.125f);
-    assert(air_harp_duty_fraction(AirHarpVoice::center_duty) == 0.25f);
-    assert(air_harp_duty_fraction(kAirHarpDutyCount - 1) == 0.50f);
+    assert(harp.voice().volume_pct == 0);
+    assert(air_harp_volume_gain(0) == 0.0f);
+    assert(air_harp_volume_gain(AirHarpVoice::center_volume_pct) == 0.25f);
+    assert(air_harp_volume_gain(kAirHarpMaxVolumePct) == 1.0f);
+    for (int level = 1; level <= kAirHarpMaxVolumePct; ++level) {
+        assert(air_harp_volume_gain(level) > air_harp_volume_gain(level - 1));
+    }
 }
 
 static void test_ems_simultaneous_alarms() {

@@ -57,7 +57,7 @@ struct NeutralSamples {
     }
 };
 
-enum class HarpStatus { NoImu, Centering, Ready, Playing };
+enum class HarpStatus { NoImu, Centering, Ready, Silent, Playing };
 
 void draw_background(M5Canvas &canvas) {
     const int w = canvas.width();
@@ -68,7 +68,7 @@ void draw_background(M5Canvas &canvas) {
     canvas.setFont(&fonts::Font2);
     canvas.setTextColor(kIdleColor);
     canvas.drawCentreString("PITCH  Left / Right", w / 2, 58);
-    canvas.drawCentreString("DUTY  Up / Down", w / 2, 119);
+    canvas.drawCentreString("VOLUME  Up / Down", w / 2, 119);
     ui_draw_footer2(canvas, g_settings.harp_toggle ? "A: Toggle  B: Center" : "Hold A   B: Center",
                     "Hold A+B : Go Home");
 }
@@ -78,6 +78,7 @@ void draw_status(M5Canvas &canvas, HarpStatus status) {
     switch (status) {
         case HarpStatus::NoImu: text = "IMU unavailable"; break;
         case HarpStatus::Centering: text = "Hold still to center"; break;
+        case HarpStatus::Silent: text = "Silent"; break;
         case HarpStatus::Playing: text = "Playing"; break;
         case HarpStatus::Ready: break;
     }
@@ -96,26 +97,20 @@ void draw_note(M5Canvas &canvas, uint8_t note, uint32_t accent) {
     canvas.drawCentreString(label, canvas.width() / 2, 76);
 }
 
-void draw_duty(M5Canvas &canvas, uint8_t duty, uint32_t accent) {
+void draw_volume(M5Canvas &canvas, uint8_t volume_pct, uint32_t accent) {
     const int w = canvas.width();
-    const float fraction = air_harp_duty_fraction(duty);
-    char label[16];
-    std::snprintf(label, sizeof(label), "%.1f%%", fraction * 100.0f);
+    char label[8];
+    std::snprintf(label, sizeof(label), "%u%%", static_cast<unsigned>(volume_pct));
     canvas.fillRect(10, 136, w - 20, 28, kPanel);
     canvas.setFont(&fonts::FreeSansBold12pt7b);
     canvas.setTextColor(accent);
     canvas.drawCentreString(label, w / 2, 137);
 
-    canvas.fillRect(0, 178, w, 14, kBackground);
-    const int start = (w - 96) / 2;
-    const int high = std::lround(24 * fraction);
-    for (int i = 0; i < 4; ++i) {
-        const int x = start + i * 24;
-        canvas.drawFastVLine(x, 179, 12, accent);
-        canvas.drawFastHLine(x, 179, high, accent);
-        canvas.drawFastVLine(x + high, 179, 12, accent);
-        canvas.drawFastHLine(x + high, 190, 24 - high, accent);
-    }
+    constexpr int kInset = 14;
+    const int width = w - 2 * kInset;
+    canvas.fillRoundRect(kInset - 2, 178, width + 4, 14, 3, kPanel);
+    const int filled = (width * volume_pct + kAirHarpMaxVolumePct / 2) / kAirHarpMaxVolumePct;
+    if (filled > 0) canvas.fillRect(kInset, 181, filled, 8, accent);
 }
 
 void present_band(M5Canvas &canvas, int y, int height) {
@@ -202,8 +197,8 @@ void air_harp_ui_run() {
 
         const auto voice = harp.voice();
         const bool playing = gate && calibrated && !alarms.any() && !g_settings.sound_muted;
-        if (playing && (!was_playing || last_voice.note != voice.note || last_voice.duty != voice.duty)) {
-            sound_fx_harp_play(voice.note, voice.duty);
+        if (playing && (!was_playing || last_voice.note != voice.note || last_voice.volume_pct != voice.volume_pct)) {
+            sound_fx_harp_play(voice.note, voice.volume_pct);
         } else if (!playing && was_playing) {
             sound_fx_harp_stop();
         }
@@ -213,14 +208,15 @@ void air_harp_ui_run() {
         if (redraw_base || now_ms >= next_draw_ms) {
             const HarpStatus status = !imu_active ? HarpStatus::NoImu :
                                       !calibrated ? HarpStatus::Centering :
-                                      playing ? HarpStatus::Playing : HarpStatus::Ready;
+                                      !playing ? HarpStatus::Ready :
+                                      voice.volume_pct == 0 ? HarpStatus::Silent : HarpStatus::Playing;
             const bool status_changed = redraw_base || status != drawn_status;
             const bool color_changed = (status == HarpStatus::Playing) != (drawn_status == HarpStatus::Playing);
             const bool note_changed = redraw_base || color_changed || voice.note != drawn_voice.note;
-            const bool duty_changed = redraw_base || color_changed || voice.duty != drawn_voice.duty;
+            const bool volume_changed = redraw_base || color_changed || voice.volume_pct != drawn_voice.volume_pct;
             const bool header_changed = redraw_base || now_ms >= next_header_ms ||
                                         alarms.epi != drawn_alarms.epi || alarms.preset != drawn_alarms.preset;
-            const uint32_t accent = playing ? 0x80EDC4 : kIdleColor;
+            const uint32_t accent = status == HarpStatus::Playing ? 0x80EDC4 : kIdleColor;
             if (redraw_base) draw_background(canvas);
             if (header_changed) {
                 ui_draw_header(canvas, alarms.any() ? alarms.title() : "AIR HARP",
@@ -230,7 +226,7 @@ void air_harp_ui_run() {
             }
             if (status_changed) draw_status(canvas, status);
             if (note_changed) draw_note(canvas, voice.note, accent);
-            if (duty_changed) draw_duty(canvas, voice.duty, accent);
+            if (volume_changed) draw_volume(canvas, voice.volume_pct, accent);
 
             if (redraw_base) {
                 ui_present(canvas);
@@ -239,7 +235,7 @@ void air_harp_ui_run() {
                 if (header_changed) present_band(canvas, 0, 22);
                 if (status_changed) present_band(canvas, 25, 25);
                 if (note_changed) present_band(canvas, 75, 28);
-                if (duty_changed) {
+                if (volume_changed) {
                     present_band(canvas, 136, 28);
                     present_band(canvas, 178, 14);
                 }

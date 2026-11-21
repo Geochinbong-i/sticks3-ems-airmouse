@@ -93,7 +93,7 @@ static void draw_home_screen(M5Canvas &canvas, int sel, int64_t now_ms) {
          0xFF5252},
         {"BLE MOUSE", "Bluetooth Gyro", 0x29B6F6},
         {"USB MOUSE", "USB-C HID Gyro", 0x00BFA5},
-        {"AIR HARP",  "Pitch / Pulse Duty", 0xC393FF},
+        {"AIR HARP",  "Pitch / Volume", 0xC393FF},
         {"SETTINGS",  "Bright/Cal/Time", 0xFFB300},
     };
 

@@ -42,8 +42,11 @@ void air_harp_note_label(int note, char (&label)[4]) {
     label[3] = '\0';
 }
 
-float air_harp_duty_fraction(int duty) {
-    return 0.125f + 0.375f * duty / (kAirHarpDutyCount - 1);
+float air_harp_volume_gain(int volume_pct) {
+    const float level = static_cast<float>(std::clamp(volume_pct, 0, kAirHarpMaxVolumePct)) /
+                        kAirHarpMaxVolumePct;
+    // Spread the audible gain changes across the upper part of the control.
+    return level * level;
 }
 
 bool AirHarpCore::set_neutral(float ax, float ay, float az, int64_t now_ms) {
@@ -104,12 +107,12 @@ bool AirHarpCore::sample_gyro(float gx, float gy, float gz, bool flip_180, int64
     const float vertical = std::atan2(tilt, reference) * kDegrees * (flip_180 ? -1.0f : 1.0f);
     // Give each side of the neutral pose the full range of the hand motion.
     constexpr int center_note = AirHarpVoice::center_note;
-    constexpr int center_duty = AirHarpVoice::center_duty;
+    constexpr int center_volume = AirHarpVoice::center_volume_pct;
     const float note_span = filtered_yaw_ < 0 ? center_note : kAirHarpNoteCount - 1 - center_note;
-    const float duty_span = vertical < 0 ? center_duty : kAirHarpDutyCount - 1 - center_duty;
     const int note = quantize(voice_.note, center_note + filtered_yaw_ / kYawLimit * note_span, kAirHarpNoteCount);
-    const int duty = quantize(voice_.duty, center_duty + vertical / kPitchLimit * duty_span, kAirHarpDutyCount);
-    const bool changed = note != voice_.note || duty != voice_.duty;
-    voice_ = {static_cast<uint8_t>(note), static_cast<uint8_t>(duty)};
+    const int volume = quantize(voice_.volume_pct, center_volume + vertical / kPitchLimit * center_volume,
+                                kAirHarpMaxVolumePct + 1);
+    const bool changed = note != voice_.note || volume != voice_.volume_pct;
+    voice_ = {static_cast<uint8_t>(note), static_cast<uint8_t>(volume)};
     return changed;
 }

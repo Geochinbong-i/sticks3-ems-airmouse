@@ -28,6 +28,7 @@ constexpr int kHarpChannel = 0;
 constexpr int kCueChannel = 1;
 constexpr unsigned kSampleRate = 24000;
 constexpr size_t kBlockSamples = kSampleRate / 100; // 10 ms per block
+constexpr float kHarpPulseDuty = 0.25f;
 
 struct HarpAudio {
     // The speaker can hold two blocks. Rotate three buffers as each slot opens.
@@ -36,9 +37,8 @@ struct HarpAudio {
     unsigned target_voice = 0;
     float phase = 0;
     float rate = 0;
-    float duty = 0.25f;
     float target_rate = 0;
-    float target_duty = 0.25f;
+    float target_gain = 0;
     float gain = 0;
     bool active = false;
 
@@ -52,40 +52,43 @@ struct HarpAudio {
         gain = 0;
     }
 
-    void update(unsigned voice) {
+    bool update(unsigned voice) {
         if (voice == 0) {
             stop();
-            return;
+            return false;
         }
-        if (M5.Speaker.isPlaying(kHarpChannel) >= 2) return;
         if (target_voice != voice) {
             target_voice = voice;
             target_rate = air_harp_note_hz((voice >> 8) - 1) / kSampleRate;
-            target_duty = air_harp_duty_fraction(voice & 0xFF);
+            target_gain = air_harp_volume_gain(voice & 0xFF);
         }
-        if (!active) {
-            rate = target_rate;
-            duty = target_duty;
+        if (target_gain == 0 && gain == 0) {
+            active = false;
+            return false;
         }
+        if (M5.Speaker.isPlaying(kHarpChannel) >= 2) return true;
+        if (!active) rate = target_rate;
 
         auto &block = blocks[next_block];
+        const float gain_step = (target_gain - gain) / block.size();
+        float sample_gain = gain;
         for (auto &sample : block) {
             rate += 0.006f * (target_rate - rate);
-            duty += 0.004f * (target_duty - duty);
-            gain += 0.02f * (1.0f - gain);
+            sample_gain += gain_step;
 
             const float end = phase + rate;
-            // Average the pulse over this sample interval so fractional edges
-            // remain audible even when the duty step is smaller than one sample.
-            const float high = std::clamp(duty - phase, 0.0f, rate)
-                             + std::clamp(end - 1.0f, 0.0f, duty);
-            sample = static_cast<int16_t>(24000.0f * gain * (high / rate - duty));
+            // Average the fixed pulse over this sample interval to keep edges clean.
+            const float high = std::clamp(kHarpPulseDuty - phase, 0.0f, rate)
+                             + std::clamp(end - 1.0f, 0.0f, kHarpPulseDuty);
+            sample = static_cast<int16_t>(24000.0f * sample_gain * (high / rate - kHarpPulseDuty));
             phase = end >= 1.0f ? end - 1.0f : end;
         }
         if (M5.Speaker.playRaw(block.data(), block.size(), kSampleRate, false, 1, kHarpChannel)) {
             next_block = (next_block + 1) % blocks.size();
+            gain = target_gain;
             active = true;
         }
+        return target_gain > 0 || gain > 0;
     }
 };
 
@@ -157,14 +160,14 @@ void sound_task(void *) {
         const unsigned requested = s_requested_harp.load();
         const unsigned voice = requested != 0 && volume != 0 && !ems_timer_active_alarms().any()
                              ? requested : 0;
-        s_harp.update(voice);
+        const bool stream_harp = s_harp.update(voice);
 
         SoundCue cue;
-        const TickType_t timeout = voice != 0 ? pdMS_TO_TICKS(3) :
+        const TickType_t timeout = stream_harp ? pdMS_TO_TICKS(3) :
                                    M5.Speaker.isRunning() ? pdMS_TO_TICKS(300) : portMAX_DELAY;
         if (xQueueReceive(s_queue, &cue, timeout) != pdTRUE) {
             // The StickS3's external audio rail turns off with the speaker.
-            if (voice == 0 && M5.Speaker.isRunning() && !M5.Speaker.isPlaying()) M5.Speaker.end();
+            if (!stream_harp && M5.Speaker.isRunning() && !M5.Speaker.isPlaying()) M5.Speaker.end();
             continue;
         }
         if (cue == SoundCue::Wake || !M5.Speaker.isEnabled()) continue;
@@ -235,10 +238,11 @@ void sound_fx_stop() {
     wake_sound_task();
 }
 
-void sound_fx_harp_play(uint8_t note, uint8_t duty) {
-    if (note >= kAirHarpNoteCount || duty >= kAirHarpDutyCount) return;
-    const unsigned voice = ((static_cast<unsigned>(note) + 1) << 8) | duty;
-    if (s_requested_harp.exchange(voice) == 0) wake_sound_task();
+void sound_fx_harp_play(uint8_t note, uint8_t volume_pct) {
+    if (note >= kAirHarpNoteCount || volume_pct > kAirHarpMaxVolumePct) return;
+    const unsigned voice = ((static_cast<unsigned>(note) + 1) << 8) | volume_pct;
+    const unsigned previous = s_requested_harp.exchange(voice);
+    if (volume_pct != 0 && (previous & 0xFF) == 0) wake_sound_task();
 }
 
 void sound_fx_harp_stop() {

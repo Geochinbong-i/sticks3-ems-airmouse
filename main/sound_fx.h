@@ -9,5 +9,5 @@ void sound_fx_confirm();
 void sound_fx_epi_logged();
 void sound_fx_alarms(bool epi, bool preset);
 void sound_fx_stop();
-void sound_fx_harp_play(uint8_t note, uint8_t duty);
+void sound_fx_harp_play(uint8_t note, uint8_t volume_pct);
 void sound_fx_harp_stop();

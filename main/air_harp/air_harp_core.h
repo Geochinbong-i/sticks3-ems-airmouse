@@ -3,19 +3,19 @@
 #include <cstdint>
 
 inline constexpr int kAirHarpFirstMidi = 36; // C2
-inline constexpr int kAirHarpNoteCount = 36;  // Through B4
-inline constexpr int kAirHarpDutyCount = 100;
+inline constexpr int kAirHarpNoteCount = 24;  // Through B3
+inline constexpr int kAirHarpMaxVolumePct = 100;
 
 float air_harp_note_hz(int note);
 void air_harp_note_label(int note, char (&label)[4]);
-float air_harp_duty_fraction(int duty);
+float air_harp_volume_gain(int volume_pct);
 
 struct AirHarpVoice {
     static constexpr int center_note = 12; // C3
-    static constexpr int center_duty = 33; // 25%
+    static constexpr int center_volume_pct = kAirHarpMaxVolumePct / 2;
 
     uint8_t note = center_note;
-    uint8_t duty = center_duty;
+    uint8_t volume_pct = center_volume_pct;
 };
 
 class AirHarpCore {
