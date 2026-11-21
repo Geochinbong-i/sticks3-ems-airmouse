@@ -34,7 +34,8 @@ void draw_airmouse_frame(M5Canvas &canvas,
                          int64_t now_ms) {
     int w = canvas.width();
     int h = canvas.height();
-    bool ems_alarm = ems_timer_has_active_alarm();
+    const auto alarms = ems_timer_active_alarms();
+    const bool ems_alarm = alarms.any();
     bool flash_on = ((now_ms / 400) % 2) == 0;
 
     canvas.fillScreen(0x0B0F17);
@@ -43,7 +44,7 @@ void draw_airmouse_frame(M5Canvas &canvas,
                          ? 0xB71C1C
                          : ((transport == AirMouseTransport::Ble) ? 0x123866 : 0x11493A);
     const char *hdr_title = (ems_alarm && flash_on)
-                              ? "EMS DUE!"
+                              ? alarms.title()
                               : ((transport == AirMouseTransport::Ble) ? "BLE MOUSE" : "USB MOUSE");
     ui_draw_header(canvas, hdr_title, hdr_col, 0xFFFFFF);
 
@@ -414,10 +415,10 @@ void airmouse_ui_run(AirMouseTransport transport) {
         if (connected && (d.dx != 0 || d.dy != 0 || d.wheel != 0 || bst.buttons != prev_buttons)) {
             if (transport == AirMouseTransport::Ble) {
                 airmouse_ble_send(bst.buttons, d.dx, d.dy, d.wheel);
-            } else {
-                airmouse_usb_send(bst.buttons, d.dx, d.dy, d.wheel);
+                prev_buttons = bst.buttons;
+            } else if (airmouse_usb_send(bst.buttons, d.dx, d.dy, d.wheel)) {
+                prev_buttons = bst.buttons;
             }
-            prev_buttons = bst.buttons;
         } else if (!connected) {
             prev_buttons = 0;
         }

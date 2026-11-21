@@ -8,147 +8,178 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstddef>
 
 namespace {
 
-enum class SoundCue : uint8_t {
-    ApplyVolume = 0,
-    Click,
-    Confirm,
-    EpiLogged,
-    EpiDue,
-    PresetDue,
-    Stop,
-    HarpUpdate,
-};
+enum class SoundCue : uint8_t { Wake, Click, Confirm, EpiLogged };
 
 QueueHandle_t s_queue = nullptr;
-std::atomic<bool> s_cancel_seq{false};
+std::atomic<bool> s_stop_requested{false};
+std::atomic<unsigned> s_pending_alarms{0};
 std::atomic<unsigned> s_requested_harp{0};
+std::atomic<uint8_t> s_volume{0};
+constexpr unsigned kEpiAlarm = 1;
+constexpr unsigned kPresetAlarm = 2;
 constexpr int kHarpChannel = 0;
+constexpr int kCueChannel = 1;
+constexpr unsigned kSampleRate = 24000;
+constexpr size_t kBlockSamples = kSampleRate / 100; // 10 ms per block
 
-constexpr std::array<uint8_t, 32> pulse_wave(size_t high_samples) {
-    std::array<uint8_t, 32> wave{};
-    constexpr unsigned amplitude = 96;
-    const unsigned low = 128 - amplitude * high_samples / wave.size();
-    for (size_t i = 0; i < wave.size(); ++i) {
-        wave[i] = low + (i < high_samples ? amplitude : 0);
+struct HarpAudio {
+    // The speaker can hold two blocks. Rotate three buffers as each slot opens.
+    std::array<std::array<int16_t, kBlockSamples>, 3> blocks{};
+    size_t next_block = 0;
+    unsigned target_voice = 0;
+    float phase = 0;
+    float rate = 0;
+    float duty = 0.25f;
+    float target_rate = 0;
+    float target_duty = 0.25f;
+    float gain = 0;
+    bool active = false;
+
+    void stop() {
+        if (active) M5.Speaker.stop(kHarpChannel);
+        reset();
     }
-    return wave;
-}
 
-constexpr std::array kHarpWaves = {pulse_wave(4), pulse_wave(8), pulse_wave(12), pulse_wave(16)};
-static_assert(kHarpWaves.size() == sizeof(kAirHarpDuties) / sizeof(kAirHarpDuties[0]));
+    void reset() {
+        active = false;
+        gain = 0;
+    }
 
-uint8_t calc_vol_255() {
-    if (g_settings.sound_muted) return 0;
-    int v = g_settings.sound_volume;
-    if (v < 0) v = 0;
-    if (v > 100) v = 100;
-    return (uint8_t)((v * 255) / 100);
-}
-
-bool interruptible_sleep_ms(uint32_t ms) {
-    uint32_t elapsed = 0;
-    while (elapsed < ms) {
-        if (s_cancel_seq.load(std::memory_order_acquire)) {
-            return false;
+    void update(unsigned voice) {
+        if (voice == 0) {
+            stop();
+            return;
         }
-        uint32_t step = (ms - elapsed > 15) ? 15 : (ms - elapsed);
+        if (M5.Speaker.isPlaying(kHarpChannel) >= 2) return;
+        if (target_voice != voice) {
+            target_voice = voice;
+            target_rate = air_harp_note_hz((voice >> 8) - 1) / kSampleRate;
+            target_duty = air_harp_duty_fraction(voice & 0xFF);
+        }
+        if (!active) {
+            rate = target_rate;
+            duty = target_duty;
+        }
+
+        auto &block = blocks[next_block];
+        for (auto &sample : block) {
+            rate += 0.006f * (target_rate - rate);
+            duty += 0.004f * (target_duty - duty);
+            gain += 0.02f * (1.0f - gain);
+
+            const float end = phase + rate;
+            // Average the pulse over this sample interval so fractional edges
+            // remain audible even when the duty step is smaller than one sample.
+            const float high = std::clamp(duty - phase, 0.0f, rate)
+                             + std::clamp(end - 1.0f, 0.0f, duty);
+            sample = static_cast<int16_t>(24000.0f * gain * (high / rate - duty));
+            phase = end >= 1.0f ? end - 1.0f : end;
+        }
+        if (M5.Speaker.playRaw(block.data(), block.size(), kSampleRate, false, 1, kHarpChannel)) {
+            next_block = (next_block + 1) % blocks.size();
+            active = true;
+        }
+    }
+};
+
+HarpAudio s_harp;
+
+uint8_t configured_volume() {
+    return g_settings.sound_muted ? 0 : std::clamp(g_settings.sound_volume, 0, 100) * 255 / 100;
+}
+
+bool interruptible_sleep_ms(uint32_t ms, bool interrupted_by_alarm = false) {
+    for (uint32_t elapsed = 0; elapsed < ms;) {
+        if (s_stop_requested.load() || (interrupted_by_alarm && s_pending_alarms.load())) return false;
+        const uint32_t step = std::min<uint32_t>(ms - elapsed, 10);
         vTaskDelay(pdMS_TO_TICKS(step));
         elapsed += step;
     }
-    return !s_cancel_seq.load(std::memory_order_acquire);
+    return !s_stop_requested.load() && (!interrupted_by_alarm || !s_pending_alarms.load());
 }
 
-void update_harp(unsigned &playing) {
-    const unsigned requested = s_requested_harp.load();
-    const unsigned voice = requested != 0 && !g_settings.sound_muted && !ems_timer_has_active_alarm()
-        ? requested : 0;
-    if (voice == playing) return;
-    if (voice == 0) {
-        M5.Speaker.stop(kHarpChannel);
-        playing = 0;
-        return;
-    }
-
-    const unsigned note = (voice >> 8) - 1;
-    const unsigned duty = voice & 0xFF;
-    const auto &wave = kHarpWaves[duty];
-    M5.Speaker.setVolume(calc_vol_255());
-    if (M5.Speaker.tone(kAirHarpNotes[note].hz, UINT32_MAX, kHarpChannel, true,
-                        wave.data(), wave.size())) {
-        playing = voice;
-    }
+unsigned take_alarm() {
+    const unsigned pending = s_pending_alarms.load();
+    const unsigned next = (pending & kEpiAlarm) ? kEpiAlarm : pending & kPresetAlarm;
+    if (next == 0) return 0;
+    return s_pending_alarms.fetch_and(~next) & next;
 }
 
-void sound_task(void *arg) {
-    (void)arg;
-    SoundCue cue;
-    unsigned harp_playing = 0;
+void play_alarm(unsigned alarm, uint8_t volume) {
+    const auto active = ems_timer_active_alarms();
+    if (!(alarm == kEpiAlarm ? active.epi : active.preset)) return;
+    s_harp.stop();
+    if (volume == 0 || s_stop_requested.load() || !M5.Speaker.isEnabled()) return;
+
+    if (alarm == kEpiAlarm) {
+        M5.Speaker.setVolume(235);
+        for (int i = 0; i < 3 && !s_stop_requested.load(); ++i) {
+            M5.Speaker.tone(2400.0f, 90, kCueChannel);
+            if (!interruptible_sleep_ms(130)) break;
+        }
+    } else {
+        M5.Speaker.setVolume(volume);
+        M5.Speaker.tone(1568.0f, 100, kCueChannel);
+        if (interruptible_sleep_ms(130)) {
+            M5.Speaker.tone(1975.5f, 140, kCueChannel);
+            interruptible_sleep_ms(140);
+        }
+    }
+    M5.Speaker.setVolume(s_volume.load());
+}
+
+void sound_task(void *) {
+    uint8_t applied_volume = s_volume.load();
     while (true) {
-        const TickType_t idle_timeout = M5.Speaker.isRunning()
-            ? pdMS_TO_TICKS(300) : portMAX_DELAY;
-        if (xQueueReceive(s_queue, &cue, idle_timeout) != pdTRUE) {
-            // end() also turns off the StickS3's external audio power rail.
-            if (M5.Speaker.isRunning() && !M5.Speaker.isPlaying()) M5.Speaker.end();
-            continue;
+        const uint8_t volume = s_volume.load();
+        if (volume != applied_volume) {
+            M5.Speaker.setVolume(volume);
+            applied_volume = volume;
         }
-
-        if (!M5.Speaker.isEnabled()) continue;
-
-        if (cue == SoundCue::Stop) {
-            s_cancel_seq.store(false, std::memory_order_release);
+        if (s_stop_requested.exchange(false)) {
             M5.Speaker.stop();
-            harp_playing = 0;
-            continue;
+            s_harp.reset();
         }
-        update_harp(harp_playing);
-        if (cue == SoundCue::HarpUpdate) continue;
-        if (cue == SoundCue::ApplyVolume) {
-            M5.Speaker.setVolume(calc_vol_255());
+
+        const unsigned alarm = take_alarm();
+        if (alarm != 0) {
+            play_alarm(alarm, volume);
             continue;
         }
 
-        if (g_settings.sound_muted) continue;
+        const unsigned requested = s_requested_harp.load();
+        const unsigned voice = requested != 0 && volume != 0 && !ems_timer_active_alarms().any()
+                             ? requested : 0;
+        s_harp.update(voice);
 
-        s_cancel_seq.store(false, std::memory_order_release);
-        uint8_t normal_vol = calc_vol_255();
-        M5.Speaker.setVolume(normal_vol);
+        SoundCue cue;
+        const TickType_t timeout = voice != 0 ? pdMS_TO_TICKS(3) :
+                                   M5.Speaker.isRunning() ? pdMS_TO_TICKS(300) : portMAX_DELAY;
+        if (xQueueReceive(s_queue, &cue, timeout) != pdTRUE) {
+            // The StickS3's external audio rail turns off with the speaker.
+            if (voice == 0 && M5.Speaker.isRunning() && !M5.Speaker.isPlaying()) M5.Speaker.end();
+            continue;
+        }
+        if (cue == SoundCue::Wake || !M5.Speaker.isEnabled()) continue;
+        if (volume == 0 || s_stop_requested.load() || s_pending_alarms.load()) continue;
 
         switch (cue) {
             case SoundCue::Click:
-                M5.Speaker.tone(1400.0f, 25);
+                M5.Speaker.tone(1400.0f, 25, kCueChannel);
                 break;
             case SoundCue::Confirm:
-                M5.Speaker.tone(950.0f, 55);
+                M5.Speaker.tone(950.0f, 55, kCueChannel);
                 break;
             case SoundCue::EpiLogged:
-                M5.Speaker.tone(1046.5f, 70);
-                if (interruptible_sleep_ms(85)) {
-                    M5.Speaker.tone(1318.5f, 90);
-                }
-                break;
-            case SoundCue::EpiDue:
-                M5.Speaker.stop(kHarpChannel);
-                harp_playing = 0;
-                M5.Speaker.setVolume(235);
-                for (int i = 0; i < 3; i++) {
-                    if (s_cancel_seq.load(std::memory_order_acquire)) break;
-                    M5.Speaker.tone(2400.0f, 90);
-                    if (!interruptible_sleep_ms(130)) break;
-                }
-                M5.Speaker.setVolume(calc_vol_255());
-                break;
-            case SoundCue::PresetDue:
-                M5.Speaker.stop(kHarpChannel);
-                harp_playing = 0;
-                M5.Speaker.tone(1568.0f, 100);
-                if (interruptible_sleep_ms(130)) {
-                    M5.Speaker.tone(1975.5f, 140);
-                }
+                M5.Speaker.tone(1046.5f, 70, kCueChannel);
+                if (interruptible_sleep_ms(85, true)) M5.Speaker.tone(1318.5f, 90, kCueChannel);
                 break;
             default:
                 break;
@@ -157,41 +188,59 @@ void sound_task(void *arg) {
 }
 
 void post_cue(SoundCue cue) {
-    if (!s_queue) return;
-    if (cue == SoundCue::Stop) {
-        s_cancel_seq.store(true, std::memory_order_release);
-        xQueueReset(s_queue);
-    } else if (cue == SoundCue::EpiDue || cue == SoundCue::PresetDue) {
-        // Urgent alarm cancels lower-priority pending click sequences
-        s_cancel_seq.store(true, std::memory_order_release);
-        xQueueSendToFront(s_queue, &cue, 0);
-        return;
-    }
-    xQueueSend(s_queue, &cue, 0);
+    if (s_queue) xQueueSend(s_queue, &cue, 0);
+}
+
+void wake_sound_task() {
+    // If the queue is full the worker already has work and will see the atomics.
+    const SoundCue cue = SoundCue::Wake;
+    if (s_queue) xQueueSendToFront(s_queue, &cue, 0);
 }
 
 } // namespace
 
 void sound_fx_init() {
     if (s_queue) return;
+    s_volume.store(configured_volume());
+    M5.Speaker.setVolume(s_volume.load());
     s_queue = xQueueCreate(8, sizeof(SoundCue));
-    xTaskCreate(sound_task, "sound_fx", 2560, nullptr, 4, nullptr);
+    if (!s_queue) return;
+    if (xTaskCreate(sound_task, "sound_fx", 3072, nullptr, 4, nullptr) != pdPASS) {
+        vQueueDelete(s_queue);
+        s_queue = nullptr;
+    }
 }
 
-void sound_fx_apply_volume() { post_cue(SoundCue::ApplyVolume); }
+void sound_fx_apply_volume() {
+    s_volume.store(configured_volume());
+    wake_sound_task();
+}
 void sound_fx_click() { post_cue(SoundCue::Click); }
 void sound_fx_confirm() { post_cue(SoundCue::Confirm); }
 void sound_fx_epi_logged() { post_cue(SoundCue::EpiLogged); }
-void sound_fx_epi_due() { post_cue(SoundCue::EpiDue); }
-void sound_fx_preset_due() { post_cue(SoundCue::PresetDue); }
-void sound_fx_stop() { post_cue(SoundCue::Stop); }
+
+void sound_fx_alarms(bool epi, bool preset) {
+    const unsigned alarms = (epi ? kEpiAlarm : 0u) | (preset ? kPresetAlarm : 0u);
+    if (alarms != 0) {
+        s_pending_alarms.fetch_or(alarms);
+        wake_sound_task();
+    }
+}
+
+void sound_fx_stop() {
+    if (!s_queue) return;
+    s_stop_requested.store(true);
+    s_pending_alarms.store(0);
+    xQueueReset(s_queue);
+    wake_sound_task();
+}
 
 void sound_fx_harp_play(uint8_t note, uint8_t duty) {
-    if (note >= kAirHarpNoteCount || duty >= kHarpWaves.size()) return;
+    if (note >= kAirHarpNoteCount || duty >= kAirHarpDutyCount) return;
     const unsigned voice = ((static_cast<unsigned>(note) + 1) << 8) | duty;
-    if (s_requested_harp.exchange(voice) != voice) post_cue(SoundCue::HarpUpdate);
+    if (s_requested_harp.exchange(voice) == 0) wake_sound_task();
 }
 
 void sound_fx_harp_stop() {
-    if (s_requested_harp.exchange(0) != 0) post_cue(SoundCue::HarpUpdate);
+    if (s_requested_harp.exchange(0) != 0) wake_sound_task();
 }

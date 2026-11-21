@@ -93,9 +93,13 @@ bool airmouse_usb_start() {
 void airmouse_usb_stop() {
     s_usb_active = false;
     if (!s_usb_inited) return;
-    if (tud_mounted() && tud_hid_ready() &&
-        tud_hid_mouse_report(HID_ITF_PROTOCOL_MOUSE, 0, 0, 0, 0, 0)) {
-        vTaskDelay(pdMS_TO_TICKS(12));
+    // Allow a pending report to finish before submitting the release.
+    for (int tries = 0; tries < 6 && tud_mounted() && !tud_suspended(); ++tries) {
+        if (tud_hid_ready() && tud_hid_mouse_report(HID_ITF_PROTOCOL_MOUSE, 0, 0, 0, 0, 0)) {
+            vTaskDelay(pdMS_TO_TICKS(12));
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(4));
     }
     const esp_err_t result = tinyusb_driver_uninstall();
     if (result == ESP_OK) {
@@ -114,15 +118,13 @@ bool airmouse_usb_is_suspended() {
     return s_usb_inited && tud_suspended();
 }
 
-void airmouse_usb_send(uint8_t buttons, int8_t dx, int8_t dy, int8_t wheel) {
-    if (!s_usb_inited || !s_usb_active) return;
-    if (!tud_mounted()) return;
+bool airmouse_usb_send(uint8_t buttons, int8_t dx, int8_t dy, int8_t wheel) {
+    if (!s_usb_inited || !s_usb_active || !tud_mounted()) return false;
     if (tud_suspended()) {
         if (buttons != 0) {
             tud_remote_wakeup();
         }
-        return;
+        return false;
     }
-    if (!tud_hid_ready()) return;
-    tud_hid_mouse_report(HID_ITF_PROTOCOL_MOUSE, buttons, dx, dy, wheel, 0);
+    return tud_hid_ready() && tud_hid_mouse_report(HID_ITF_PROTOCOL_MOUSE, buttons, dx, dy, wheel, 0);
 }

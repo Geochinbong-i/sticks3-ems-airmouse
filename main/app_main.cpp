@@ -42,7 +42,8 @@ static void draw_sync_icon(M5Canvas &canvas, BootTimeSync source, uint32_t color
 static void draw_home_screen(M5Canvas &canvas, int sel, int64_t now_ms) {
     int w = canvas.width();
     bool ems_run = ems_timer_is_running();
-    bool ems_alarm = ems_timer_has_active_alarm();
+    const auto alarms = ems_timer_active_alarms();
+    const bool ems_alarm = alarms.any();
     bool flash_on = ((now_ms / 400) % 2) == 0;
 
     canvas.fillScreen(0x090D14);
@@ -59,7 +60,7 @@ static void draw_home_screen(M5Canvas &canvas, int sel, int64_t now_ms) {
         localtime_r(&now, &local);
         std::strftime(clock_text, sizeof(clock_text), "%H:%M:%S", &local);
     }
-    const char *hdr_title = show_alarm ? "EPI DUE!" : show_sync ? "SYNC" : clock_text;
+    const char *hdr_title = show_alarm ? alarms.title() : show_sync ? "SYNC" : clock_text;
     const char *badge = nullptr;
     uint32_t badge_bg = 0x4A3208;
     uint32_t badge_fg = 0xFFAB40;

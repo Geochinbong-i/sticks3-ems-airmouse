@@ -254,9 +254,8 @@ esp_err_t http_wifi_handler(httpd_req_t *req) {
     if (pass_result != ESP_OK && pass_result != ESP_ERR_NOT_FOUND) {
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid password");
     }
-    url_decode_inplace(ssid);
-    url_decode_inplace(pass);
-    if (ssid[0] == '\0' || std::strlen(ssid) > 32 || std::strlen(pass) > 64) {
+    if (!url_decode_inplace(ssid) || !url_decode_inplace(pass) ||
+        ssid[0] == '\0' || std::strlen(ssid) > 32 || std::strlen(pass) > 64) {
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid Wi-Fi credentials");
     }
 
@@ -267,7 +266,7 @@ esp_err_t http_wifi_handler(httpd_req_t *req) {
     portEXIT_CRITICAL(&s_sync_mux);
 
     httpd_resp_set_type(req, "text/plain");
-    return httpd_resp_sendstr(req, "Saved! Now select 2. Wi-Fi SNTP on StickS3.");
+    return httpd_resp_sendstr(req, "Accepted. Wait for Wi-Fi Saved on the StickS3.");
 }
 
 void stop_active_transports() {
@@ -557,6 +556,7 @@ void time_sync_ui_run() {
         int64_t now_ms = input_now_ms();
 
         bool http_pending, wifi_cfg_pending, has_tz;
+        WifiCredentials pending_wifi{};
         int64_t epoch;
         int tz_hr;
         portENTER_CRITICAL(&s_sync_mux);
@@ -567,8 +567,8 @@ void time_sync_ui_run() {
         s_http_pending = false;
         wifi_cfg_pending = s_wifi_cfg_pending;
         if (wifi_cfg_pending) {
-            std::memcpy(g_settings.wifi_ssid, s_pending_ssid, sizeof(g_settings.wifi_ssid));
-            std::memcpy(g_settings.wifi_pass, s_pending_pass, sizeof(g_settings.wifi_pass));
+            std::memcpy(pending_wifi.ssid, s_pending_ssid, sizeof(pending_wifi.ssid));
+            std::memcpy(pending_wifi.pass, s_pending_pass, sizeof(pending_wifi.pass));
             s_wifi_cfg_pending = false;
         }
         portEXIT_CRITICAL(&s_sync_mux);
@@ -586,10 +586,10 @@ void time_sync_ui_run() {
             last_draw_ms = 0;
         }
         if (wifi_cfg_pending) {
-            app_settings_save();
-            sound_fx_confirm();
-            banner_msg = "Wi-Fi Saved!";
-            banner_col = 0x69F0AE;
+            const bool saved = app_settings_save_wifi(pending_wifi.ssid, pending_wifi.pass);
+            if (saved) sound_fx_confirm();
+            banner_msg = saved ? "Wi-Fi Saved!" : "Wi-Fi save failed";
+            banner_col = saved ? 0x69F0AE : 0xFF8A80;
             last_draw_ms = 0;
         }
 

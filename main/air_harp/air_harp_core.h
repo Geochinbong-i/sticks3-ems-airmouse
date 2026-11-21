@@ -2,37 +2,41 @@
 
 #include <cstdint>
 
-struct AirHarpNote {
-    const char *name;
-    float hz;
-};
+inline constexpr int kAirHarpFirstMidi = 36; // C2
+inline constexpr int kAirHarpNoteCount = 36;  // Through B4
+inline constexpr int kAirHarpDutyCount = 100;
 
-inline constexpr AirHarpNote kAirHarpNotes[] = {
-    {"C4", 261.63f}, {"D4", 293.66f}, {"E4", 329.63f}, {"G4", 392.00f},
-    {"A4", 440.00f}, {"C5", 523.25f}, {"D5", 587.33f}, {"E5", 659.25f},
-};
-inline constexpr int kAirHarpNoteCount = sizeof(kAirHarpNotes) / sizeof(kAirHarpNotes[0]);
-inline constexpr const char *kAirHarpDuties[] = {"12.5%", "25%", "37.5%", "50%"};
+float air_harp_note_hz(int note);
+void air_harp_note_label(int note, char (&label)[4]);
+float air_harp_duty_fraction(int duty);
 
 struct AirHarpVoice {
-    uint8_t note = 3;
-    uint8_t duty = 1;
+    static constexpr int center_note = 12; // C3
+    static constexpr int center_duty = 33; // 25%
+
+    uint8_t note = center_note;
+    uint8_t duty = center_duty;
 };
 
 class AirHarpCore {
 public:
-    void reset_motion();
-    bool set_neutral(float ax, float ay, float az);
-    bool sample(int64_t now_ms, float gx, float gy, float gz, bool flip_180);
-
+    bool set_neutral(float ax, float ay, float az, int64_t now_ms);
+    void sample_accel(float ax, float ay, float az);
+    bool sample_gyro(float gx, float gy, float gz, bool flip_180, int64_t now_ms);
     AirHarpVoice voice() const { return voice_; }
 
 private:
     AirHarpVoice voice_{};
-    float up_x_ = 0.0f;
-    float up_y_ = 0.0f;
-    float up_z_ = 1.0f;
-    int64_t quiet_since_ms_ = -1;
-    int64_t rearm_after_ms_ = 0;
-    bool armed_ = false;
+    float up_x_ = 0;
+    float up_y_ = 0;
+    float up_z_ = 1;
+    float center_x_ = 0;
+    float center_y_ = 0;
+    float center_z_ = 1;
+    float pitch_tangent_x_ = 0;
+    float pitch_tangent_y_ = 1;
+    float pitch_tangent_z_ = 0;
+    float yaw_ = 0;
+    float filtered_yaw_ = 0;
+    int64_t last_gyro_ms_ = 0;
 };

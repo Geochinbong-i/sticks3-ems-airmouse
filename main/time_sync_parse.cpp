@@ -109,24 +109,23 @@ void format_posix_tz(int tz_offset_hours, char *buf, size_t len) {
     }
 }
 
-void url_decode_inplace(char *s) {
-    if (!s) return;
+bool url_decode_inplace(char *s) {
+    if (!s) return false;
     char *dst = s;
-    for (char *src = s; *src != '\0'; src++) {
+    for (const char *src = s; *src != '\0'; ++src) {
         if (*src == '+') {
             *dst++ = ' ';
-        } else if (*src == '%' && src[1] != '\0' && src[2] != '\0') {
-            int hi = hex_val(src[1]);
-            int lo = hex_val(src[2]);
-            if (hi >= 0 && lo >= 0) {
-                *dst++ = (char)((hi << 4) | lo);
-                src += 2;
-            } else {
-                *dst++ = *src;
-            }
+        } else if (*src == '%') {
+            if (src[1] == '\0' || src[2] == '\0') return false;
+            const int hi = hex_val(src[1]);
+            const int lo = hex_val(src[2]);
+            if (hi < 0 || lo < 0 || (hi == 0 && lo == 0)) return false;
+            *dst++ = static_cast<char>((hi << 4) | lo);
+            src += 2;
         } else {
             *dst++ = *src;
         }
     }
     *dst = '\0';
+    return true;
 }

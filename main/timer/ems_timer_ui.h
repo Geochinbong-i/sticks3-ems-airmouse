@@ -1,7 +1,20 @@
 #pragma once
 
+struct EmsAlarmState {
+    bool epi;
+    bool preset;
+
+    bool any() const { return epi || preset; }
+    const char *title() const {
+        if (epi && preset) return "EPI/VITAL DUE";
+        if (epi) return "EPI DUE!";
+        if (preset) return "VITAL DUE!";
+        return nullptr;
+    }
+};
+
 void ems_timer_init();
 void ems_timer_ui_run();
 bool ems_timer_is_running();
-bool ems_timer_has_active_alarm();
+EmsAlarmState ems_timer_active_alarms();
 unsigned ems_timer_alarm_sequence();

@@ -102,7 +102,8 @@ bool confirm_simple_reset(M5Canvas &canvas) {
 void draw_simple_frame(M5Canvas &canvas, int64_t now_ms) {
     int w = canvas.width();
     int h = canvas.height();
-    bool ems_alarm = ems_timer_has_active_alarm();
+    const auto alarms = ems_timer_active_alarms();
+    const bool ems_alarm = alarms.any();
     bool flash_on = ((now_ms / 400) % 2) == 0;
 
     canvas.fillScreen(0x070A0F);
@@ -116,7 +117,7 @@ void draw_simple_frame(M5Canvas &canvas, int64_t now_ms) {
     }
 
     uint32_t hdr_col = (ems_alarm && flash_on) ? 0xB71C1C : 0x142033;
-    ui_draw_header(canvas, (ems_alarm && flash_on) ? "EPI DUE!" : clk_buf, hdr_col, 0xFFFFFF);
+    ui_draw_header(canvas, (ems_alarm && flash_on) ? alarms.title() : clk_buf, hdr_col, 0xFFFFFF);
 
     constexpr int kTopY = 22;
     constexpr int kFooterH = 29;

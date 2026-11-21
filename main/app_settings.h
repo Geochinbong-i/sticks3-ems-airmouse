@@ -45,3 +45,4 @@ extern AppSettings g_settings;
 
 void app_settings_load();
 void app_settings_save();
+bool app_settings_save_wifi(const char *ssid, const char *pass);

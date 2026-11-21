@@ -29,4 +29,5 @@ ParsedTimePayload parse_ble_time_payload(const uint8_t *data, size_t len);
 void format_posix_tz(int tz_offset_hours, char *buf, size_t len);
 
 // In-place URL decoder for HTTP query parameters (+ -> space, %XX -> byte).
-void url_decode_inplace(char *s);
+// Returns false for malformed escapes or encoded NUL bytes.
+bool url_decode_inplace(char *s);

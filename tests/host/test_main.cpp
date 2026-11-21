@@ -1,4 +1,5 @@
 #include "timer/ems_timer_core.h"
+#include "timer/ems_timer_ui.h"
 #include "timer/simple_timer_core.h"
 #include "airmouse/airmouse_math.h"
 #include "air_harp/air_harp_core.h"
@@ -278,55 +279,82 @@ static void test_airmouse_button_guard() {
     assert(s.exit_requested);
 }
 
-static void test_air_harp_snap_controls() {
+static void test_air_harp_continuous_controls() {
     AirHarpCore harp;
-    assert(!harp.set_neutral(0.0f, 0.0f, 0.2f));
-    assert(harp.set_neutral(0.0f, 0.0f, 1.0f));
-    const AirHarpVoice initial = harp.voice();
+    assert(!harp.set_neutral(0, 0, 0.2f, 0));
+    assert(harp.set_neutral(0, 0, 1, 0));
+    assert(harp.voice().note == AirHarpVoice::center_note);
+    assert(harp.voice().duty == AirHarpVoice::center_duty);
 
-    auto settle = [&](int64_t at) {
-        assert(!harp.sample(at, 0, 0, 0, false));
-        assert(!harp.sample(at + 70, 0, 0, 0, false));
+    // A turn too slow to register as a snap still passes every semitone.
+    int64_t now = 0;
+    bool played[kAirHarpNoteCount]{};
+    played[harp.voice().note] = true;
+    auto sweep_yaw = [&](float degrees_per_sec, int duration_ms) {
+        for (int i = 0; i < duration_ms; i += 10) {
+            now += 10;
+            harp.sample_gyro(0, 0, degrees_per_sec, false, now);
+            played[harp.voice().note] = true;
+            assert(harp.voice().duty == AirHarpVoice::center_duty);
+        }
     };
-
-    assert(!harp.sample(0, 0, 0, -190, false));
-    settle(10);
-    assert(!harp.sample(90, 0, 0, -90, false)); // ordinary motion
-    assert(harp.sample(100, 0, 0, -190, false)); // right
-    assert(harp.voice().note == initial.note + 1 && harp.voice().duty == initial.duty);
-    assert(!harp.sample(110, 0, 0, 190, false)); // rebound
-    settle(120); // too early even after a quiet period
-    assert(!harp.sample(195, 0, 0, 190, false));
-
-    settle(310);
-    assert(harp.sample(385, 0, 0, 190, false)); // left
-    assert(harp.voice().note == initial.note);
-
-    settle(590);
-    assert(harp.sample(665, 170, 0, 0, false)); // up
-    assert(harp.voice().note == initial.note && harp.voice().duty == initial.duty + 1);
-
-    settle(870);
-    assert(!harp.sample(945, -170, 0, -170, false)); // ambiguous diagonal
-    assert(!harp.sample(950, -180, 0, 0, false)); // diagonal rebound
-    assert(harp.voice().duty == initial.duty + 1);
-
-    settle(1150);
-    assert(harp.sample(1225, -180, 0, 0, false)); // down
-    assert(harp.voice().duty == initial.duty);
-
-    settle(1430);
-    assert(harp.sample(1505, -180, 0, 0, true)); // up with flipped screen
-    assert(harp.voice().duty == initial.duty + 1);
-
-    for (int i = 0; i < kAirHarpNoteCount; ++i) {
-        const int64_t at = 1800 + i * 300;
-        settle(at);
-        assert(harp.sample(at + 75, 0, 0, -190, false));
-    }
+    sweep_yaw(9, 5100);
+    assert(harp.voice().note == 0);
+    sweep_yaw(-9, 10200);
     assert(harp.voice().note == kAirHarpNoteCount - 1);
-    harp.reset_motion();
-    assert(!harp.sample(5000, 0, 0, 190, false)); // wake or recenter starts disarmed
+    for (bool visited : played) assert(visited);
+
+    char note[4];
+    air_harp_note_label(0, note);
+    assert(std::strcmp(note, "C2") == 0);
+    air_harp_note_label(13, note);
+    assert(std::strcmp(note, "C#3") == 0);
+    air_harp_note_label(kAirHarpNoteCount - 1, note);
+    assert(std::strcmp(note, "B4") == 0);
+    assert(std::fabs(air_harp_note_hz(0) - 65.4064f) < 0.001f);
+    assert(std::fabs(air_harp_note_hz(13) / air_harp_note_hz(12) - 1.059463f) < 0.00001f);
+
+    // A stationary rate inside the drift deadband must not move the pitch.
+    assert(harp.set_neutral(0, 0, 1, now));
+    sweep_yaw(0.25f, 20000);
+    assert(harp.voice().note == AirHarpVoice::center_note);
+
+    // Sweep both ways from an upright playing pose through all 100 values.
+    assert(harp.set_neutral(0, 1, 0, now));
+    bool duties[kAirHarpDutyCount]{};
+    auto tilt = [&](float degrees, bool flip) {
+        const float angle = degrees * 0.0174532925f;
+        harp.sample_accel(0, std::cos(angle), -std::sin(angle));
+        now += 10;
+        harp.sample_gyro(0, 0, 0, flip, now);
+        duties[harp.voice().duty] = true;
+        assert(harp.voice().note == AirHarpVoice::center_note);
+    };
+    for (int i = 0; i >= -400; --i) tilt(i * 0.1f, false);
+    assert(harp.voice().duty == 0);
+    for (int i = -400; i <= 400; ++i) tilt(i * 0.1f, false);
+    assert(harp.voice().duty == kAirHarpDutyCount - 1);
+    for (bool visited : duties) assert(visited);
+    for (int i = 0; i < 35; ++i) tilt(40, true);
+    assert(harp.voice().duty == 0);
+    assert(air_harp_duty_fraction(0) == 0.125f);
+    assert(air_harp_duty_fraction(AirHarpVoice::center_duty) == 0.25f);
+    assert(air_harp_duty_fraction(kAirHarpDutyCount - 1) == 0.50f);
+}
+
+static void test_ems_simultaneous_alarms() {
+    EmsTimerCore timer;
+    timer.set_epi_interval_sec(180);
+    timer.set_preset_index(3);
+    timer.start(1000);
+    timer.log_epi(1000);
+    const auto due = timer.tick(181000);
+    assert(due.epi_just_due && due.preset_just_due);
+    EmsAlarmState alarms{timer.epi_alarm_active(), timer.preset_alarm_active()};
+    assert(std::strcmp(alarms.title(), "EPI/VITAL DUE") == 0);
+    timer.log_epi(181001);
+    alarms = {timer.epi_alarm_active(), timer.preset_alarm_active()};
+    assert(std::strcmp(alarms.title(), "VITAL DUE!") == 0);
 }
 
 static void test_time_sync_parsing() {
@@ -373,20 +401,30 @@ static void test_time_sync_parsing() {
 
     // 7. URL decode
     char qs[32] = "My+Station%20119%21";
-    url_decode_inplace(qs);
+    assert(url_decode_inplace(qs));
     assert(std::strcmp(qs, "My Station 119!") == 0);
+    char ssid[] = "%ED%95%9C%EA%B8%80%2B%25";
+    assert(url_decode_inplace(ssid));
+    assert(std::strcmp(ssid, "한글+%") == 0);
+    char encoded_nul[] = "good%00trailing";
+    assert(!url_decode_inplace(encoded_nul));
+    char invalid_escape[] = "bad%2Z";
+    assert(!url_decode_inplace(invalid_escape));
+    char incomplete_escape[] = "bad%";
+    assert(!url_decode_inplace(incomplete_escape));
 }
 
 int main() {
     test_ems_timer_stopwatch_and_pause();
     test_ems_timer_epi_interval_and_overdue();
     test_ems_timer_presets_and_ring_log();
+    test_ems_simultaneous_alarms();
     test_simple_timer_core();
     test_gyro_airmouse_calibration_and_motion();
     test_gyro_leftward_drift_suppression_and_relative_pose();
     test_gyro_flip_180();
     test_airmouse_button_guard();
-    test_air_harp_snap_controls();
+    test_air_harp_continuous_controls();
     test_time_sync_parsing();
     std::printf("ALL HOST TESTS PASSED\n");
     return 0;

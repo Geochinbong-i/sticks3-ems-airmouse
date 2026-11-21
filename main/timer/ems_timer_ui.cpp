@@ -43,11 +43,7 @@ static void ems_timer_bg_task(void *arg) {
         if (tres.epi_just_due || tres.preset_just_due) {
             s_alarm_sequence.fetch_add(1, std::memory_order_relaxed);
         }
-        if (tres.epi_just_due || tres.epi_reminder_beep) {
-            sound_fx_epi_due();
-        } else if (tres.preset_just_due) {
-            sound_fx_preset_due();
-        }
+        sound_fx_alarms(tres.epi_just_due || tres.epi_reminder_beep, tres.preset_just_due);
         vTaskDelay(pdMS_TO_TICKS(200));
     }
 }
@@ -73,9 +69,9 @@ unsigned ems_timer_alarm_sequence() {
     return s_alarm_sequence.load(std::memory_order_relaxed);
 }
 
-bool ems_timer_has_active_alarm() {
+EmsAlarmState ems_timer_active_alarms() {
     TimerLock lock;
-    return s_timer.epi_alarm_active() || s_timer.preset_alarm_active();
+    return {s_timer.epi_alarm_active(), s_timer.preset_alarm_active()};
 }
 
 enum class EmsAction : int {

@@ -8,62 +8,107 @@
 #include "timer/ems_timer_ui.h"
 #include "ui_common.h"
 
+#include <algorithm>
 #include <cmath>
+#include <cstdio>
 
 namespace {
 
-struct NeutralSamples {
-    float x = 0;
-    float y = 0;
-    float z = 0;
-    int count = 0;
+constexpr uint32_t kBackground = 0x090D14;
+constexpr uint32_t kPanel = 0x171D2C;
+constexpr uint32_t kIdleColor = 0xA8B8D3;
 
-    bool add(AirHarpCore &harp, const m5::IMU_Class::imu_data_t &sample) {
+struct NeutralSamples {
+    float ax = 0, ay = 0, az = 0;
+    float gx = 0, gy = 0, gz = 0;
+    int accel_count = 0;
+    int gyro_count = 0;
+
+    bool add(AirHarpCore &harp, const m5::IMU_Class::imu_data_t &sample,
+             bool accel_fresh, bool gyro_fresh, int64_t now_ms) {
         const auto &g = sample.gyro;
-        const auto &a = sample.accel;
-        if (!std::isfinite(g.x) || !std::isfinite(g.y) || !std::isfinite(g.z) ||
-            !std::isfinite(a.x) || !std::isfinite(a.y) || !std::isfinite(a.z) ||
-            std::fabs(g.x) > 35.0f || std::fabs(g.y) > 35.0f || std::fabs(g.z) > 35.0f) {
+        if (gyro_fresh) {
+            if (!std::isfinite(g.x) || !std::isfinite(g.y) || !std::isfinite(g.z) ||
+                std::max({std::fabs(g.x), std::fabs(g.y), std::fabs(g.z)}) > 6.0f) {
+                *this = {};
+                return false;
+            }
+            gx += g.x;
+            gy += g.y;
+            gz += g.z;
+            ++gyro_count;
+        }
+        if (accel_fresh) {
+            const auto &a = sample.accel;
+            ax += a.x;
+            ay += a.y;
+            az += a.z;
+            ++accel_count;
+        }
+        if (accel_count < 16 || gyro_count < 16) return false;
+        if (!harp.set_neutral(ax / accel_count, ay / accel_count, az / accel_count, now_ms)) {
             *this = {};
             return false;
         }
-        x += a.x;
-        y += a.y;
-        z += a.z;
-        if (++count < 12) return false;
-
-        const bool ready = harp.set_neutral(x / count, y / count, z / count);
-        *this = {};
-        return ready;
+        gx /= gyro_count;
+        gy /= gyro_count;
+        gz /= gyro_count;
+        return true;
     }
 };
 
-void draw_harp(M5Canvas &canvas, AirHarpVoice voice, const char *state, bool playing,
-               bool ems_alarm) {
+enum class HarpStatus { NoImu, Centering, Ready, Playing };
+
+void draw_background(M5Canvas &canvas) {
     const int w = canvas.width();
-    const uint32_t accent = playing ? 0x80EDC4 : 0xA8B8D3;
-
-    canvas.fillScreen(0x090D14);
-    ui_draw_header(canvas, ems_alarm ? "EPI DUE!" : "AIR HARP",
-                   ems_alarm ? 0xB71C1C : 0x2B1D46, 0xFFFFFF,
-                   g_settings.sound_muted && !ems_alarm ? "MUTE" : nullptr);
-
+    canvas.fillScreen(kBackground);
+    canvas.fillRoundRect(5, 54, w - 10, 54, 5, kPanel);
+    canvas.fillRoundRect(5, 115, w - 10, 54, 5, kPanel);
     canvas.setTextWrap(false);
     canvas.setFont(&fonts::Font2);
-    canvas.setTextColor(0xA8B8D3);
-    canvas.drawCentreString(state, w / 2, 29);
-
-    canvas.fillRoundRect(5, 54, w - 10, 54, 5, 0x171D2C);
-    canvas.fillRoundRect(5, 115, w - 10, 54, 5, 0x171D2C);
+    canvas.setTextColor(kIdleColor);
     canvas.drawCentreString("PITCH  Left / Right", w / 2, 58);
     canvas.drawCentreString("DUTY  Up / Down", w / 2, 119);
+    ui_draw_footer2(canvas, g_settings.harp_toggle ? "A: Toggle  B: Center" : "Hold A   B: Center",
+                    "Hold A+B : Go Home");
+}
+
+void draw_status(M5Canvas &canvas, HarpStatus status) {
+    const char *text = "Ready";
+    switch (status) {
+        case HarpStatus::NoImu: text = "IMU unavailable"; break;
+        case HarpStatus::Centering: text = "Hold still to center"; break;
+        case HarpStatus::Playing: text = "Playing"; break;
+        case HarpStatus::Ready: break;
+    }
+    canvas.fillRect(0, 25, canvas.width(), 25, kBackground);
+    canvas.setFont(&fonts::Font2);
+    canvas.setTextColor(kIdleColor);
+    canvas.drawCentreString(text, canvas.width() / 2, 29);
+}
+
+void draw_note(M5Canvas &canvas, uint8_t note, uint32_t accent) {
+    char label[4];
+    air_harp_note_label(note, label);
+    canvas.fillRect(10, 75, canvas.width() - 20, 28, kPanel);
     canvas.setFont(&fonts::FreeSansBold12pt7b);
     canvas.setTextColor(accent);
-    canvas.drawCentreString(kAirHarpNotes[voice.note].name, w / 2, 76);
-    canvas.drawCentreString(kAirHarpDuties[voice.duty], w / 2, 137);
+    canvas.drawCentreString(label, canvas.width() / 2, 76);
+}
 
+void draw_duty(M5Canvas &canvas, uint8_t duty, uint32_t accent) {
+    const int w = canvas.width();
+    const float fraction = air_harp_duty_fraction(duty);
+    char label[16];
+    std::snprintf(label, sizeof(label), "%.1f%%", fraction * 100.0f);
+    canvas.fillRect(10, 136, w - 20, 28, kPanel);
+    canvas.setFont(&fonts::FreeSansBold12pt7b);
+    canvas.setTextColor(accent);
+    canvas.drawCentreString(label, w / 2, 137);
+
+    canvas.fillRect(0, 178, w, 14, kBackground);
     const int start = (w - 96) / 2;
-    const int high = 3 * (voice.duty + 1);
+    const int high = std::lround(24 * fraction);
     for (int i = 0; i < 4; ++i) {
         const int x = start + i * 24;
         canvas.drawFastVLine(x, 179, 12, accent);
@@ -71,17 +116,19 @@ void draw_harp(M5Canvas &canvas, AirHarpVoice voice, const char *state, bool pla
         canvas.drawFastVLine(x + high, 179, 12, accent);
         canvas.drawFastHLine(x + high, 190, 24 - high, accent);
     }
+}
 
-    ui_draw_footer2(canvas, g_settings.harp_toggle ? "A: Toggle  B: Center" : "Hold A   B: Center",
-                    "Hold A+B : Go Home");
+void present_band(M5Canvas &canvas, int y, int height) {
+    M5.Display.setClipRect(0, y, canvas.width(), height);
     ui_present(canvas);
+    M5.Display.clearClipRect();
 }
 
 } // namespace
 
 void air_harp_ui_run() {
     M5Canvas canvas(&M5.Display);
-    canvas.createSprite(M5.Display.width(), M5.Display.height());
+    if (!canvas.createSprite(M5.Display.width(), M5.Display.height())) return;
     input_wait_all_release();
 
     AirHarpCore harp;
@@ -91,10 +138,15 @@ void air_harp_ui_run() {
     bool toggled = false;
     int64_t next_imu_attempt_ms = 0;
     int64_t next_draw_ms = 0;
+    int64_t next_header_ms = 0;
     int64_t next_alarm_check_ms = 0;
-    bool ems_alarm = false;
+    EmsAlarmState alarms{};
+    EmsAlarmState drawn_alarms{};
     bool was_playing = false;
     AirHarpVoice last_voice{};
+    bool redraw_base = true;
+    HarpStatus drawn_status = HarpStatus::NoImu;
+    AirHarpVoice drawn_voice{};
 
     while (true) {
         input_update();
@@ -110,6 +162,7 @@ void air_harp_ui_run() {
             calibrated = false;
             toggled = false;
             was_playing = false;
+            redraw_base = true;
             input_idle_delay(20);
             continue;
         }
@@ -118,21 +171,14 @@ void air_harp_ui_run() {
             imu_active = imu_set_active();
             next_imu_attempt_ms = now_ms + 1000;
             neutral = {};
-            harp.reset_motion();
-            next_draw_ms = 0;
         }
         if (input_b_pressed()) {
             calibrated = false;
             neutral = {};
-            harp.reset_motion();
-            next_draw_ms = 0;
         }
-        if (g_settings.harp_toggle && input_a_pressed()) {
-            toggled = !toggled;
-            next_draw_ms = 0;
-        }
+        if (g_settings.harp_toggle && input_a_pressed()) toggled = !toggled;
         if (now_ms >= next_alarm_check_ms) {
-            ems_alarm = ems_timer_has_active_alarm();
+            alarms = ems_timer_active_alarms();
             next_alarm_check_ms = now_ms + 100;
         }
 
@@ -140,37 +186,68 @@ void air_harp_ui_run() {
         if (imu_active) {
             const auto fresh = M5.Imu.update();
             const auto &s = M5.Imu.getImuData();
-            // Acceleration and gyro data-ready bits can arrive in different polls.
-            if (!calibrated && (fresh & m5::IMU_Class::sensor_mask_accel)) {
-                calibrated = neutral.add(harp, s);
-                if (calibrated) next_draw_ms = 0;
-            } else if (calibrated && (fresh & m5::IMU_Class::sensor_mask_gyro)) {
-                const float gx = s.gyro.x - g_settings.imu_abs_gx;
-                const float gy = s.gyro.y - g_settings.imu_abs_gy;
-                const float gz = s.gyro.z - g_settings.imu_abs_gz;
-                if (harp.sample(now_ms, gx, gy, gz, g_settings.rotation == 2)) {
-                    if (gate) ui_note_activity(now_ms);
-                    next_draw_ms = 0;
+            const bool accel_fresh = fresh & m5::IMU_Class::sensor_mask_accel;
+            const bool gyro_fresh = fresh & m5::IMU_Class::sensor_mask_gyro;
+            if (!calibrated) {
+                calibrated = neutral.add(harp, s, accel_fresh, gyro_fresh, now_ms);
+            } else {
+                if (accel_fresh) harp.sample_accel(s.accel.x, s.accel.y, s.accel.z);
+                if (gyro_fresh) {
+                    const bool changed = harp.sample_gyro(s.gyro.x - neutral.gx, s.gyro.y - neutral.gy,
+                                                          s.gyro.z - neutral.gz, g_settings.rotation == 2, now_ms);
+                    if (changed && gate) ui_note_activity(now_ms);
                 }
             }
         }
 
         const auto voice = harp.voice();
-        const bool playing = gate && calibrated && !ems_alarm && !g_settings.sound_muted;
+        const bool playing = gate && calibrated && !alarms.any() && !g_settings.sound_muted;
         if (playing && (!was_playing || last_voice.note != voice.note || last_voice.duty != voice.duty)) {
             sound_fx_harp_play(voice.note, voice.duty);
         } else if (!playing && was_playing) {
             sound_fx_harp_stop();
         }
-        if (playing != was_playing) next_draw_ms = 0;
         was_playing = playing;
         last_voice = voice;
 
-        if (now_ms >= next_draw_ms) {
-            const char *status = !imu_active ? "IMU unavailable" : !calibrated ? "Hold still to center" :
-                                 playing ? "Playing" : "Ready";
-            draw_harp(canvas, voice, status, playing, ems_alarm);
-            next_draw_ms = now_ms + 200;
+        if (redraw_base || now_ms >= next_draw_ms) {
+            const HarpStatus status = !imu_active ? HarpStatus::NoImu :
+                                      !calibrated ? HarpStatus::Centering :
+                                      playing ? HarpStatus::Playing : HarpStatus::Ready;
+            const bool status_changed = redraw_base || status != drawn_status;
+            const bool color_changed = (status == HarpStatus::Playing) != (drawn_status == HarpStatus::Playing);
+            const bool note_changed = redraw_base || color_changed || voice.note != drawn_voice.note;
+            const bool duty_changed = redraw_base || color_changed || voice.duty != drawn_voice.duty;
+            const bool header_changed = redraw_base || now_ms >= next_header_ms ||
+                                        alarms.epi != drawn_alarms.epi || alarms.preset != drawn_alarms.preset;
+            const uint32_t accent = playing ? 0x80EDC4 : kIdleColor;
+            if (redraw_base) draw_background(canvas);
+            if (header_changed) {
+                ui_draw_header(canvas, alarms.any() ? alarms.title() : "AIR HARP",
+                               alarms.any() ? 0xB71C1C : 0x2B1D46, 0xFFFFFF,
+                               g_settings.sound_muted && !alarms.any() ? "MUTE" : nullptr);
+                next_header_ms = now_ms + 2000;
+            }
+            if (status_changed) draw_status(canvas, status);
+            if (note_changed) draw_note(canvas, voice.note, accent);
+            if (duty_changed) draw_duty(canvas, voice.duty, accent);
+
+            if (redraw_base) {
+                ui_present(canvas);
+                redraw_base = false;
+            } else {
+                if (header_changed) present_band(canvas, 0, 22);
+                if (status_changed) present_band(canvas, 25, 25);
+                if (note_changed) present_band(canvas, 75, 28);
+                if (duty_changed) {
+                    present_band(canvas, 136, 28);
+                    present_band(canvas, 178, 14);
+                }
+            }
+            drawn_status = status;
+            drawn_voice = voice;
+            drawn_alarms = alarms;
+            next_draw_ms = now_ms + 33;
         }
         vTaskDelay(pdMS_TO_TICKS(10));
     }
@@ -178,5 +255,4 @@ void air_harp_ui_run() {
     sound_fx_harp_stop();
     imu_set_idle();
     input_wait_ab_release();
-    canvas.deleteSprite();
 }

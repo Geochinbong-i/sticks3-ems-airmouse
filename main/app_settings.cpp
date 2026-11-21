@@ -20,6 +20,11 @@ struct StoredImuAbs {
     float az;
 };
 
+struct StoredWifi {
+    char ssid[sizeof(g_settings.wifi_ssid)];
+    char pass[sizeof(g_settings.wifi_pass)];
+};
+
 static constexpr uint32_t kImuAbsMagic = 0x494D5531u; // "IMU1"
 
 void app_settings_load() {
@@ -81,13 +86,23 @@ void app_settings_load() {
 
     if (nvs_get_u8(h, "boot_ble_time", &b) == ESP_OK) g_settings.boot_ble_time_sync = (b != 0);
 
-    size_t ssid_len = sizeof(g_settings.wifi_ssid);
-    if (nvs_get_str(h, "wifi_ssid", g_settings.wifi_ssid, &ssid_len) != ESP_OK) {
-        g_settings.wifi_ssid[0] = '\0';
-    }
-    size_t pass_len = sizeof(g_settings.wifi_pass);
-    if (nvs_get_str(h, "wifi_pass", g_settings.wifi_pass, &pass_len) != ESP_OK) {
-        g_settings.wifi_pass[0] = '\0';
+    StoredWifi wifi{};
+    size_t wifi_len = sizeof(wifi);
+    if (nvs_get_blob(h, "wifi_cfg", &wifi, &wifi_len) == ESP_OK &&
+        wifi_len == sizeof(wifi) && wifi.ssid[0] != '\0' &&
+        wifi.ssid[sizeof(wifi.ssid) - 1] == '\0' && wifi.pass[sizeof(wifi.pass) - 1] == '\0') {
+        std::memcpy(g_settings.wifi_ssid, wifi.ssid, sizeof(wifi.ssid));
+        std::memcpy(g_settings.wifi_pass, wifi.pass, sizeof(wifi.pass));
+    } else {
+        // Older firmware saved the credentials as two string entries.
+        size_t ssid_len = sizeof(g_settings.wifi_ssid);
+        if (nvs_get_str(h, "wifi_ssid", g_settings.wifi_ssid, &ssid_len) != ESP_OK) {
+            g_settings.wifi_ssid[0] = '\0';
+        }
+        size_t pass_len = sizeof(g_settings.wifi_pass);
+        if (nvs_get_str(h, "wifi_pass", g_settings.wifi_pass, &pass_len) != ESP_OK) {
+            g_settings.wifi_pass[0] = '\0';
+        }
     }
 
     nvs_close(h);
@@ -129,9 +144,26 @@ void app_settings_save() {
     }
 
     nvs_set_u8(h, "boot_ble_time", g_settings.boot_ble_time_sync ? 1 : 0);
-    nvs_set_str(h, "wifi_ssid", g_settings.wifi_ssid);
-    nvs_set_str(h, "wifi_pass", g_settings.wifi_pass);
-
     nvs_commit(h);
     nvs_close(h);
+}
+
+bool app_settings_save_wifi(const char *ssid, const char *pass) {
+    StoredWifi wifi{};
+    const size_t ssid_len = std::strlen(ssid);
+    const size_t pass_len = std::strlen(pass);
+    if (ssid_len == 0 || ssid_len >= sizeof(wifi.ssid) || pass_len >= sizeof(wifi.pass)) return false;
+    std::memcpy(wifi.ssid, ssid, ssid_len);
+    std::memcpy(wifi.pass, pass, pass_len);
+
+    nvs_handle_t handle = 0;
+    if (nvs_open(kNvsNs, NVS_READWRITE, &handle) != ESP_OK) return false;
+    const bool saved = nvs_set_blob(handle, "wifi_cfg", &wifi, sizeof(wifi)) == ESP_OK &&
+                       nvs_commit(handle) == ESP_OK;
+    nvs_close(handle);
+    if (saved) {
+        std::memcpy(g_settings.wifi_ssid, wifi.ssid, sizeof(wifi.ssid));
+        std::memcpy(g_settings.wifi_pass, wifi.pass, sizeof(wifi.pass));
+    }
+    return saved;
 }
