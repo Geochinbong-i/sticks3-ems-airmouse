@@ -8,7 +8,7 @@ inline constexpr int kAirHarpMaxVolumePct = 100;
 
 float air_harp_note_hz(int note);
 void air_harp_note_label(int note, char (&label)[4]);
-float air_harp_volume_gain(int volume_pct);
+uint8_t air_harp_channel_volume(int volume_pct);
 
 struct AirHarpVoice {
     static constexpr int center_note = 12; // C3

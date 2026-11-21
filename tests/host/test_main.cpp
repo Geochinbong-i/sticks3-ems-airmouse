@@ -338,11 +338,11 @@ static void test_air_harp_continuous_controls() {
     for (bool visited : volumes) assert(visited);
     for (int i = 0; i < 35; ++i) tilt(40, true);
     assert(harp.voice().volume_pct == 0);
-    assert(air_harp_volume_gain(0) == 0.0f);
-    assert(air_harp_volume_gain(AirHarpVoice::center_volume_pct) == 0.25f);
-    assert(air_harp_volume_gain(kAirHarpMaxVolumePct) == 1.0f);
+    assert(air_harp_channel_volume(0) == 0);
+    assert(air_harp_channel_volume(AirHarpVoice::center_volume_pct) == 128);
+    assert(air_harp_channel_volume(kAirHarpMaxVolumePct) == 255);
     for (int level = 1; level <= kAirHarpMaxVolumePct; ++level) {
-        assert(air_harp_volume_gain(level) > air_harp_volume_gain(level - 1));
+        assert(air_harp_channel_volume(level) > air_harp_channel_volume(level - 1));
     }
 }
 

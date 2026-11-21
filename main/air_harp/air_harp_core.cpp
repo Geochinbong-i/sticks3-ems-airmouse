@@ -42,11 +42,9 @@ void air_harp_note_label(int note, char (&label)[4]) {
     label[3] = '\0';
 }
 
-float air_harp_volume_gain(int volume_pct) {
-    const float level = static_cast<float>(std::clamp(volume_pct, 0, kAirHarpMaxVolumePct)) /
-                        kAirHarpMaxVolumePct;
-    // Spread the audible gain changes across the upper part of the control.
-    return level * level;
+uint8_t air_harp_channel_volume(int volume_pct) {
+    const int level = std::clamp(volume_pct, 0, kAirHarpMaxVolumePct);
+    return (level * 255 + kAirHarpMaxVolumePct / 2) / kAirHarpMaxVolumePct;
 }
 
 bool AirHarpCore::set_neutral(float ax, float ay, float az, int64_t now_ms) {

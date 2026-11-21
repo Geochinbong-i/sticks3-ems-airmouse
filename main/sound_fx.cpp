@@ -4,6 +4,7 @@
 #include "timer/ems_timer_ui.h"
 
 #include "M5Unified.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
@@ -26,69 +27,61 @@ constexpr unsigned kEpiAlarm = 1;
 constexpr unsigned kPresetAlarm = 2;
 constexpr int kHarpChannel = 0;
 constexpr int kCueChannel = 1;
-constexpr unsigned kSampleRate = 24000;
-constexpr size_t kBlockSamples = kSampleRate / 100; // 10 ms per block
-constexpr float kHarpPulseDuty = 0.25f;
+constexpr int kHarpFadeStepMs = 4;
+constexpr int kHarpMaxVolumeStep = 64;
+
+constexpr auto kHarpWave = [] {
+    std::array<uint8_t, 64> wave{};
+    // A 25% pulse centered at 128, with the same peak level as the PCM voice.
+    for (size_t i = 0; i < wave.size(); ++i) wave[i] = i < wave.size() / 4 ? 197 : 105;
+    return wave;
+}();
 
 struct HarpAudio {
-    // The speaker can hold two blocks. Rotate three buffers as each slot opens.
-    std::array<std::array<int16_t, kBlockSamples>, 3> blocks{};
-    size_t next_block = 0;
-    unsigned target_voice = 0;
-    float phase = 0;
-    float rate = 0;
-    float target_rate = 0;
-    float target_gain = 0;
-    float gain = 0;
-    bool active = false;
+    int note = -1;
+    int volume = 0;
+    int64_t next_volume_step_ms = 0;
+
+    bool playing() const { return note >= 0; }
 
     void stop() {
-        if (active) M5.Speaker.stop(kHarpChannel);
+        if (playing()) M5.Speaker.stop(kHarpChannel);
         reset();
     }
 
     void reset() {
-        active = false;
-        gain = 0;
+        note = -1;
+        volume = 0;
+        next_volume_step_ms = 0;
     }
 
-    bool update(unsigned voice) {
-        if (voice == 0) {
+    // Returns true while the channel still needs volume steps or a retry.
+    bool update(unsigned voice, int64_t now_ms) {
+        if (voice == 0 || !M5.Speaker.isEnabled()) {
             stop();
             return false;
         }
-        if (target_voice != voice) {
-            target_voice = voice;
-            target_rate = air_harp_note_hz((voice >> 8) - 1) / kSampleRate;
-            target_gain = air_harp_volume_gain(voice & 0xFF);
-        }
-        if (target_gain == 0 && gain == 0) {
-            active = false;
-            return false;
-        }
-        if (M5.Speaker.isPlaying(kHarpChannel) >= 2) return true;
-        if (!active) rate = target_rate;
 
-        auto &block = blocks[next_block];
-        const float gain_step = (target_gain - gain) / block.size();
-        float sample_gain = gain;
-        for (auto &sample : block) {
-            rate += 0.006f * (target_rate - rate);
-            sample_gain += gain_step;
-
-            const float end = phase + rate;
-            // Average the fixed pulse over this sample interval to keep edges clean.
-            const float high = std::clamp(kHarpPulseDuty - phase, 0.0f, rate)
-                             + std::clamp(end - 1.0f, 0.0f, kHarpPulseDuty);
-            sample = static_cast<int16_t>(24000.0f * sample_gain * (high / rate - kHarpPulseDuty));
-            phase = end >= 1.0f ? end - 1.0f : end;
+        const int target_volume = air_harp_channel_volume(voice & 0xFF);
+        const int target_note = (voice >> 8) - 1;
+        if (target_volume > 0 && target_note != note) {
+            if (!playing()) M5.Speaker.setChannelVolume(kHarpChannel, 0);
+            // The mixer loops this waveform on its own and keeps the waveform
+            // index when the same data is submitted at a different frequency.
+            if (!M5.Speaker.tone(air_harp_note_hz(target_note), UINT32_MAX, kHarpChannel,
+                                 true, kHarpWave.data(), kHarpWave.size())) {
+                return true;
+            }
+            note = target_note;
         }
-        if (M5.Speaker.playRaw(block.data(), block.size(), kSampleRate, false, 1, kHarpChannel)) {
-            next_block = (next_block + 1) % blocks.size();
-            gain = target_gain;
-            active = true;
+        if (volume != target_volume && now_ms >= next_volume_step_ms) {
+            volume += std::clamp(target_volume - volume, -kHarpMaxVolumeStep, kHarpMaxVolumeStep);
+            // The mixer squares the channel level, preserving the prior gain curve.
+            M5.Speaker.setChannelVolume(kHarpChannel, volume);
+            next_volume_step_ms = now_ms + kHarpFadeStepMs;
         }
-        return target_gain > 0 || gain > 0;
+        if (volume == 0 && target_volume == 0 && playing()) stop();
+        return volume != target_volume;
     }
 };
 
@@ -160,14 +153,15 @@ void sound_task(void *) {
         const unsigned requested = s_requested_harp.load();
         const unsigned voice = requested != 0 && volume != 0 && !ems_timer_active_alarms().any()
                              ? requested : 0;
-        const bool stream_harp = s_harp.update(voice);
+        const bool changing_harp = s_harp.update(voice, esp_timer_get_time() / 1000);
+        const bool check_idle_speaker = !s_harp.playing() && M5.Speaker.isRunning();
 
         SoundCue cue;
-        const TickType_t timeout = stream_harp ? pdMS_TO_TICKS(3) :
-                                   M5.Speaker.isRunning() ? pdMS_TO_TICKS(300) : portMAX_DELAY;
+        const TickType_t timeout = changing_harp ? pdMS_TO_TICKS(kHarpFadeStepMs) :
+                                   check_idle_speaker ? pdMS_TO_TICKS(300) : portMAX_DELAY;
         if (xQueueReceive(s_queue, &cue, timeout) != pdTRUE) {
             // The StickS3's external audio rail turns off with the speaker.
-            if (!stream_harp && M5.Speaker.isRunning() && !M5.Speaker.isPlaying()) M5.Speaker.end();
+            if (!changing_harp && check_idle_speaker && !M5.Speaker.isPlaying()) M5.Speaker.end();
             continue;
         }
         if (cue == SoundCue::Wake || !M5.Speaker.isEnabled()) continue;
@@ -241,8 +235,7 @@ void sound_fx_stop() {
 void sound_fx_harp_play(uint8_t note, uint8_t volume_pct) {
     if (note >= kAirHarpNoteCount || volume_pct > kAirHarpMaxVolumePct) return;
     const unsigned voice = ((static_cast<unsigned>(note) + 1) << 8) | volume_pct;
-    const unsigned previous = s_requested_harp.exchange(voice);
-    if (volume_pct != 0 && (previous & 0xFF) == 0) wake_sound_task();
+    if (s_requested_harp.exchange(voice) != voice) wake_sound_task();
 }
 
 void sound_fx_harp_stop() {
