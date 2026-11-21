@@ -45,7 +45,6 @@
 
 #define HIDD_APP_ID			0x1812//ATT_SVC_HID
 
-#define BATTRAY_APP_ID       0x180f
 
 
 #define ATT_SVC_HID          0x1812
@@ -322,6 +321,8 @@ extern uint8_t hidProtocolMode;
 void hidd_clcb_alloc (uint16_t conn_id, esp_bd_addr_t bda);
 
 bool hidd_clcb_dealloc (uint16_t conn_id);
+
+void hidd_le_init(void);
 
 void hidd_le_create_service(esp_gatt_if_t gatts_if);
 

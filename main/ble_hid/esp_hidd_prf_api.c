@@ -37,8 +37,6 @@ esp_err_t esp_hidd_register_callbacks(esp_hidd_event_cb_t callbacks)
         return hidd_status;
     }
 
-    esp_ble_gatts_app_register(BATTRAY_APP_ID);
-
     if((hidd_status = esp_ble_gatts_app_register(HIDD_APP_ID)) != ESP_OK) {
         return hidd_status;
     }
@@ -53,7 +51,7 @@ esp_err_t esp_hidd_profile_init(void)
         return ESP_FAIL;
     }
     // Reset the hid device target environment
-    memset(&hidd_le_env, 0, sizeof(hidd_le_env_t));
+    hidd_le_init();
     hidd_le_env.enabled = true;
     return ESP_OK;
 }
@@ -71,7 +69,7 @@ esp_err_t esp_hidd_profile_deinit(void)
         esp_ble_gatts_delete_service(hidd_svc_hdl);
     }
 
-    if (hidd_le_env.gatt_if != 0) {
+    if (hidd_le_env.gatt_if != ESP_GATT_IF_NONE) {
         esp_ble_gatts_app_unregister(hidd_le_env.gatt_if);
     }
     hidd_le_env.enabled = false;

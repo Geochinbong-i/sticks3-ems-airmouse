@@ -12,6 +12,15 @@ struct AirMouseConfig {
     bool flip_180 = false;   // true when display rotation == 2 (180 deg)
 };
 
+struct AirMouseAngularRates {
+    float horizontal;
+    float vertical;
+};
+
+// Project gyroscope readings onto the yaw and pitch axes of a held pose.
+AirMouseAngularRates airmouse_project_motion(float gx, float gy, float gz,
+                                             float up_x, float up_y, float up_z, bool flip_180);
+
 struct AirMouseDelta {
     int8_t dx = 0;
     int8_t dy = 0;

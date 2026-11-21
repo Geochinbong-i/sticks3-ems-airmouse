@@ -5,6 +5,10 @@
 #include <cstdint>
 
 void ui_apply_brightness();
+void ui_note_activity(int64_t now_ms);
+bool ui_update_screen_power(int64_t now_ms, bool button_down);
+void ui_present(M5Canvas &canvas);
+bool ui_screen_is_on();
 
 // Draws a compact vertical battery icon (or charging plug icon when charging)
 // immediately to the left of the battery percentage using Font2.
@@ -13,7 +17,7 @@ void ui_draw_battery_badge(M5Canvas &canvas, int right_x, int hdr_h, uint32_t bg
 // Draws standard 22px header with Font2 title + optional badge text + battery/plug icon.
 void ui_draw_header(M5Canvas &canvas, const char *title, uint32_t hdr_col,
                     uint32_t fg_col = 0xFFFFFF, const char *badge_txt = nullptr,
-                    uint32_t badge_bg = 0x4A3208, uint32_t badge_fg = 0xFFAB40);
+                    uint32_t badge_bg = 0x4A3208, uint32_t badge_fg = 0xFFAB40, int title_x = 4);
 
 // Draws standard 29px 2-line left-aligned footer using Font2 (no wrapping).
 void ui_draw_footer2(M5Canvas &canvas, const char *line1, const char *line2,

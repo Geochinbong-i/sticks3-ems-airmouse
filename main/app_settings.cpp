@@ -34,6 +34,10 @@ void app_settings_load() {
     if (nvs_get_i32(h, "bright", &v) == ESP_OK && v >= 20 && v <= 100) {
         g_settings.brightness_pct = (int)v;
     }
+    if (nvs_get_i32(h, "screen_off", &v) == ESP_OK &&
+        (v == 0 || v == 30 || v == 60 || v == 180)) {
+        g_settings.screen_off_sec = v;
+    }
     if (nvs_get_i32(h, "tz_hr", &v) == ESP_OK && v >= -12 && v <= 14) {
         g_settings.tz_offset_hours = (int)v;
     }
@@ -58,6 +62,8 @@ void app_settings_load() {
         g_settings.rotation = (int)v;
     }
 
+    if (nvs_get_u8(h, "harp_toggle", &b) == ESP_OK) g_settings.harp_toggle = (b != 0);
+
     StoredImuAbs imu{};
     size_t imu_sz = sizeof(imu);
     if (nvs_get_blob(h, "imu_abs", &imu, &imu_sz) == ESP_OK &&
@@ -72,6 +78,8 @@ void app_settings_load() {
         g_settings.imu_abs_ay = imu.ay;
         g_settings.imu_abs_az = imu.az;
     }
+
+    if (nvs_get_u8(h, "boot_ble_time", &b) == ESP_OK) g_settings.boot_ble_time_sync = (b != 0);
 
     size_t ssid_len = sizeof(g_settings.wifi_ssid);
     if (nvs_get_str(h, "wifi_ssid", g_settings.wifi_ssid, &ssid_len) != ESP_OK) {
@@ -91,6 +99,7 @@ void app_settings_save() {
 
     nvs_set_i32(h, "tmr_mode", g_settings.timer_mode);
     nvs_set_i32(h, "bright", g_settings.brightness_pct);
+    nvs_set_i32(h, "screen_off", g_settings.screen_off_sec);
     nvs_set_i32(h, "tz_hr", g_settings.tz_offset_hours);
     nvs_set_i32(h, "epi_sec", g_settings.epi_interval_sec);
     nvs_set_i32(h, "preset_i", g_settings.preset_idx);
@@ -102,6 +111,7 @@ void app_settings_save() {
     nvs_set_i32(h, "vol", g_settings.sound_volume);
     nvs_set_u8(h, "mute", g_settings.sound_muted ? 1 : 0);
     nvs_set_i32(h, "rot", g_settings.rotation);
+    nvs_set_u8(h, "harp_toggle", g_settings.harp_toggle ? 1 : 0);
 
     if (g_settings.imu_abs_valid) {
         StoredImuAbs imu{
@@ -118,6 +128,7 @@ void app_settings_save() {
         nvs_erase_key(h, "imu_abs");
     }
 
+    nvs_set_u8(h, "boot_ble_time", g_settings.boot_ble_time_sync ? 1 : 0);
     nvs_set_str(h, "wifi_ssid", g_settings.wifi_ssid);
     nvs_set_str(h, "wifi_pass", g_settings.wifi_pass);
 

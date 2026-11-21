@@ -1,7 +1,7 @@
 # StickS3 EMS Timer & Air Mouse
 
 M5Stack **StickS3** (`ESP32-S3-PICO-1-N8R8`) 전용 경량 펌웨어입니다.  
-구급대원 현장 처치용 **EMS 타이머**와 **자이로스코프 기반 BLE / USB-C 에어마우스** 두 가지 핵심 기능만 담아 빠르게 부팅되고 직관적으로 조작할 수 있습니다.
+구급대원 현장 처치용 **EMS 타이머**, **BLE / USB-C 에어마우스**, **자이로스코프 기반 에어 하프**를 제공합니다.
 
 ## 주요 기능
 
@@ -44,11 +44,30 @@ M5Stack **StickS3** (`ESP32-S3-PICO-1-N8R8`) 전용 경량 펌웨어입니다.
 
 ---
 
-- **SETTINGS (NVS 자동 저장)**
-  - EPI 간격 (`3m` / `4m` / `5m`), 마우스 감도 (`1` ~ `5`), X/Y 반전, X/Y 축 교환, 내추럴 스크롤, 볼륨/음소거, 화면 180도 회전(`Flip Scr` — 180° 회전 시 자이로 상하 피치 방향도 자동 보정), **장치 재부팅 (`Reboot Device`)**.
-- 홈 화면이나 에어마우스 사용 중에도 EMS 타이머는 백그라운드에서 계속 동작하며, 만료 시 상단 상태바 알림(`EPI DUE!`)과 논블로킹 경고음이 울립니다.
+### 3. AIR HARP
+
+홈에서 **AIR HARP**를 열고 평소 연주할 자세로 잠깐 멈추면 자이로 기준을 잡습니다. 왼쪽·오른쪽으로 짧게 스냅하면 음이 내려가거나 올라가고, 위·아래로 스냅하면 펄스파 듀티가 바뀝니다. 기본 음은 G4이며 음역은 C4–E5, 듀티는 12.5% / 25% / 37.5% / 50%입니다.
+
+- **SETTINGS → Air Harp → Play Button**에서 HOLD 또는 TOGGLE을 선택합니다. 기본값 HOLD는 A를 누르는 동안만, TOGGLE은 A를 누를 때마다 소리를 켜거나 끕니다.
+- **B**를 누르면 현재 자세를 다시 기준으로 잡습니다. **A+B**를 길게 누르면 홈으로 돌아갑니다.
+- 화면이 자동으로 꺼지면 하프 소리와 자이로가 멈춥니다. EMS 알림이 발생하면 하프보다 우선합니다.
+
+### 4. SETTINGS
+
+Display, Time, Timers, Air Mouse, Air Harp, Sound, Device로 나뉩니다. A로 이동하고 B로 열거나 값을 바꿉니다. A+B를 길게 누르면 한 단계 뒤로 돌아갑니다. 바꾼 값은 자동 저장됩니다.
 
 ---
+
+## 화면 자동 꺼짐과 부팅 시 시간 동기화
+
+- **SETTINGS → Display → Screen Off**에서 `OFF / 30s / 1m / 3m` 중 하나를 선택합니다. 기본값은 `OFF`이며 설정은 재부팅 후에도 유지됩니다. A/B 입력이 없으면 화면이 꺼집니다. 처음 누른 A/B는 화면만 깨웁니다. 화면이 꺼져도 타이머와 HID 연결은 계속 동작하며, 새 EPI 또는 프리셋 알림이 화면을 깨웁니다.
+- **핫스팟 / Wi-Fi**는 **SETTINGS → Time → Time Sync → 1. Wi-Fi AP Push**에서 등록합니다. 휴대폰으로 `StickS3-SYNC`에 연결해 `http://192.168.4.1`을 열고, 인터넷에 연결된 2.4GHz 핫스팟이나 Wi-Fi의 SSID와 암호를 저장합니다. 다음 부팅부터 백그라운드에서 접속해 `pool.ntp.org`로 시간을 맞춥니다.
+- **아이폰 BLE**는 **SETTINGS → Time → Time Sync → 3. BLE Time Sync**에서 B를 누릅니다. StickS3에 BLE READY가 표시되면 아이폰 **설정 → Bluetooth**에서 StickS3-Time을 선택합니다. 이미 BLE 마우스로 페어링한 아이폰에서는 기존 기기 이름이 표시될 수 있습니다. 연결되면 StickS3가 암호화된 연결에서 아이폰의 Current Time Service를 읽고, 시각을 받으면 BLE TIME SYNCED!를 표시합니다.
+- BLE 스캐너를 사용할 때는 Current Time Service (0x1805)의 Current Time (0x2A2B)에 현재 시간을 YYYY-MM-DD HH:MM:SS UTF-8 문자열로 쓸 수도 있습니다.
+- BLE를 한 번 동기화하면 저장된 Wi-Fi가 없거나 SNTP가 실패한 부팅에서 이미 페어링된 호스트의 재접속을 최대 30초 기다립니다. 자동 동기화는 호스트가 CTS를 제공하거나 재접속 시 시간을 써 주는 앱을 실행할 때 동작합니다. BLE 호스트와 StickS3의 시간대는 동일하게 맞춥니다. 수동 BLE 검색과 Wi-Fi 설정 창은 각각 최대 2분간 열립니다. 부팅 중 홈에 Wi-Fi 또는 Bluetooth 아이콘이 표시되고, 시각이 준비되면 현지 시각으로 바뀝니다.
+- **RTC**는 전원 차단 중에도 칩에 백업 전원이 공급되어야 시간이 흐릅니다. 펌웨어는 부팅 시 RX8130의 발진 정지 플래그를 확인하며, 시간이 유실됐으면 자동 동기화가 완료될 때까지 미설정으로 취급합니다. SIMPLE TIMER에서 시각을 기록하려면 먼저 시계가 설정되어 있어야 합니다. 보드에서 유지 여부를 확인하려면 동기화 후 USB를 분리하고 전원 버튼으로 종료한 뒤, Wi-Fi와 BLE를 끈 상태로 다시 켜서 시각과 시리얼 로그(`RTC restored` 또는 `RX8130 clock lost or unreadable`)를 확인합니다. [StickS3 문서](https://docs.m5stack.com/en/core/StickS3) · [RX8130CE 데이터시트](https://download.epsondevice.com/td/pdf/app/RX8130CE_en.pdf)
+
+화면이 꺼지면 화면 갱신과 배터리 화면용 읽기를 중단하고, 조건이 맞으면 ESP32가 라이트 슬립에 들어갑니다. 효과음이 끝나면 오디오 전원을 끄며, 마우스 추적, 하프 연주 및 보정에 자이로를 사용합니다. 연결된 에어마우스의 동작과 EMS 타이머 알림은 유지됩니다. 배터리 소모를 비교할 때는 USB를 뽑고 홈에서 화면이 꺼진 뒤 같은 조건으로 측정합니다.
 
 ## 빌드 및 플래시 방법
 
@@ -60,7 +79,7 @@ M5Stack **StickS3** (`ESP32-S3-PICO-1-N8R8`) 전용 경량 펌웨어입니다.
      ```bash
      python -m esptool --chip esp32s3 --port COM번호 write-flash 0x0 sticks3-ems-airmouse-full.bin
      ```
-   - 참고: `AIR MOUSE USB` 모드를 한 번 실행하면 USB-OTG 포트가 HID 마우스로 전환되므로, USB 시리얼 콘솔 복구가 필요할 때는 `SETTINGS → Reboot Device`로 재부팅하세요(펌웨어 재플래시용 다운로드 모드는 언제든 진입 가능).
+   - 참고: `AIR MOUSE USB` 모드를 종료한 후 USB 시리얼 콘솔이 복구되지 않으면 `SETTINGS → Device → Reboot Device`로 재부팅하세요(펌웨어 재플래시용 다운로드 모드는 언제든 진입 가능).
 
 ## 호스트 단위 테스트
 

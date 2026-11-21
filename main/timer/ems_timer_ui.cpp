@@ -10,10 +10,12 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 
 static EmsTimerCore s_timer;
+static std::atomic<unsigned> s_alarm_sequence{0};
 static bool s_timer_cfg_applied = false;
 static SemaphoreHandle_t s_timer_mutex = nullptr;
 
@@ -37,6 +39,9 @@ static void ems_timer_bg_task(void *arg) {
         {
             TimerLock lock;
             tres = s_timer.tick(now_ms);
+        }
+        if (tres.epi_just_due || tres.preset_just_due) {
+            s_alarm_sequence.fetch_add(1, std::memory_order_relaxed);
         }
         if (tres.epi_just_due || tres.epi_reminder_beep) {
             sound_fx_epi_due();
@@ -62,6 +67,10 @@ void ems_timer_init() {
 bool ems_timer_is_running() {
     TimerLock lock;
     return s_timer.state() == EmsState::Running;
+}
+
+unsigned ems_timer_alarm_sequence() {
+    return s_alarm_sequence.load(std::memory_order_relaxed);
 }
 
 bool ems_timer_has_active_alarm() {
@@ -124,6 +133,11 @@ static bool confirm_reset_modal(M5Canvas &canvas) {
             return true;
         }
 
+        if (!ui_screen_is_on()) {
+            input_idle_delay(25);
+            continue;
+        }
+
         int w = canvas.width();
         canvas.fillScreen(0x140A0A);
         ui_draw_header(canvas, "RESET EMS", 0x2B1212, 0xFF8A80);
@@ -156,8 +170,8 @@ static bool confirm_reset_modal(M5Canvas &canvas) {
         canvas.print("B : Reset All");
 
         ui_draw_footer2(canvas, "A: Cancel  B: Clear", "Hold A+B : Go Back", 0x140A0A, 0xC09E9E);
-        canvas.pushSprite(0, 0);
-        vTaskDelay(pdMS_TO_TICKS(30));
+        ui_present(canvas);
+        input_idle_delay(30);
     }
 }
 
@@ -183,6 +197,11 @@ static void show_logs_modal(M5Canvas &canvas) {
         }
 
         int h = canvas.height();
+        if (!ui_screen_is_on()) {
+            input_idle_delay(25);
+            continue;
+        }
+
         canvas.fillScreen(0x0B0F17);
 
         char lhdr[24];
@@ -223,8 +242,8 @@ static void show_logs_modal(M5Canvas &canvas) {
         }
 
         ui_draw_footer2(canvas, "A: NextPg  B: Back", "Hold A+B : Close");
-        canvas.pushSprite(0, 0);
-        vTaskDelay(pdMS_TO_TICKS(30));
+        ui_present(canvas);
+        input_idle_delay(30);
     }
 }
 
@@ -433,7 +452,7 @@ static void draw_ems_frame(M5Canvas &canvas, int64_t now_ms, EmsAction sel_actio
         ui_draw_footer2(canvas, "A:Act  B:OK  HB:EPI", "Hold A+B : Go Home");
     }
 
-    canvas.pushSprite(0, 0);
+    ui_present(canvas);
 }
 
 void ems_timer_ui_run() {
@@ -625,11 +644,11 @@ void ems_timer_ui_run() {
             b_was_down = b_down;
         }
 
-        if ((now_ms - last_draw_ms) >= 100) {
+        if (ui_screen_is_on() && (now_ms - last_draw_ms) >= 100) {
             last_draw_ms = now_ms;
             draw_ems_frame(canvas, now_ms, sel_action);
         }
 
-        vTaskDelay(pdMS_TO_TICKS(20));
+        input_idle_delay(20);
     }
 }

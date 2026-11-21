@@ -3,6 +3,7 @@
 #include "ems_timer_ui.h"
 #include "input_util.h"
 #include "sound_fx.h"
+#include "time_sync.h"
 #include "ui_common.h"
 
 #include "M5Unified.h"
@@ -56,6 +57,11 @@ bool confirm_simple_reset(M5Canvas &canvas) {
             return true;
         }
 
+        if (!ui_screen_is_on()) {
+            input_idle_delay(25);
+            continue;
+        }
+
         int w = canvas.width();
         canvas.fillScreen(0x140A0A);
         ui_draw_header(canvas, "RESET TIME", 0x2B1212, 0xFF8A80);
@@ -88,8 +94,8 @@ bool confirm_simple_reset(M5Canvas &canvas) {
         canvas.print("B : Clear All");
 
         ui_draw_footer2(canvas, "A: Cancel  B: Clear", "Hold A+B : Go Back", 0x140A0A, 0xC09E9E);
-        canvas.pushSprite(0, 0);
-        vTaskDelay(pdMS_TO_TICKS(25));
+        ui_present(canvas);
+        input_idle_delay(25);
     }
 }
 
@@ -102,9 +108,12 @@ void draw_simple_frame(M5Canvas &canvas, int64_t now_ms) {
     canvas.fillScreen(0x070A0F);
 
     int ch = 0, cm = 0, cs = 0;
-    get_wall_hms(ch, cm, cs);
-    char clk_buf[16];
-    std::snprintf(clk_buf, sizeof(clk_buf), "%02d:%02d:%02d", ch, cm, cs);
+    const bool clock_valid = time_sync_is_valid();
+    char clk_buf[16] = "--:--:--";
+    if (clock_valid) {
+        get_wall_hms(ch, cm, cs);
+        std::snprintf(clk_buf, sizeof(clk_buf), "%02d:%02d:%02d", ch, cm, cs);
+    }
 
     uint32_t hdr_col = (ems_alarm && flash_on) ? 0xB71C1C : 0x142033;
     ui_draw_header(canvas, (ems_alarm && flash_on) ? "EPI DUE!" : clk_buf, hdr_col, 0xFFFFFF);
@@ -163,8 +172,9 @@ void draw_simple_frame(M5Canvas &canvas, int64_t now_ms) {
         canvas.setTextDatum(TL_DATUM);
     }
 
-    ui_draw_footer2(canvas, "A: Stamp   B: Reset", "Hold A+B : Go Home");
-    canvas.pushSprite(0, 0);
+    ui_draw_footer2(canvas, clock_valid ? "A: Stamp   B: Reset" : "Unset     B: Reset",
+                    "Hold A+B : Go Home");
+    ui_present(canvas);
 }
 
 } // namespace
@@ -189,8 +199,9 @@ void simple_timer_ui_run() {
 
         if (input_a_pressed()) {
             int h = 0, m = 0, s = 0;
-            get_wall_hms(h, m, s);
-            if (s_simple_timer.stamp(h, m, s)) {
+            const bool clock_valid = time_sync_is_valid();
+            if (clock_valid) get_wall_hms(h, m, s);
+            if (clock_valid && s_simple_timer.stamp(h, m, s)) {
                 sound_fx_confirm();
             } else {
                 sound_fx_click();
@@ -210,11 +221,11 @@ void simple_timer_ui_run() {
             last_draw_ms = 0;
         }
 
-        if ((now_ms - last_draw_ms) >= 120) {
+        if (ui_screen_is_on() && (now_ms - last_draw_ms) >= 120) {
             last_draw_ms = now_ms;
             draw_simple_frame(canvas, now_ms);
         }
 
-        vTaskDelay(pdMS_TO_TICKS(20));
+        input_idle_delay(20);
     }
 }

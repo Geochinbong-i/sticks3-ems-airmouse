@@ -170,6 +170,23 @@ void GyroAirMouseFilter::reset_relative_pose() {
     reset_motion();
 }
 
+AirMouseAngularRates airmouse_project_motion(float gx, float gy, float gz,
+                                             float up_x, float up_y, float up_z, bool flip_180) {
+    // Pitch is perpendicular to the forward (Y) axis and the held vertical.
+    const float forward = flip_180 ? -1.0f : 1.0f;
+    float pitch_x = forward * up_z;
+    float pitch_z = -forward * up_x;
+    const float pitch_norm = std::sqrt(pitch_x * pitch_x + pitch_z * pitch_z);
+    if (pitch_norm > 0.1f) {
+        pitch_x /= pitch_norm;
+        pitch_z /= pitch_norm;
+    } else {
+        pitch_x = forward;
+        pitch_z = 0.0f;
+    }
+    return {-(gx * up_x + gy * up_y + gz * up_z), -(gx * pitch_x + gz * pitch_z)};
+}
+
 AirMouseDelta GyroAirMouseFilter::update(float gx, float gy, float gz, float dt_sec,
                                           const AirMouseConfig &cfg,
                                           bool scroll_mode, bool paused) {
@@ -222,29 +239,10 @@ AirMouseDelta GyroAirMouseFilter::update(float gx, float gy, float gz, float dt_
         return out;
     }
 
-    // Project corrected angular rate (ux, uy, uz) onto gravity-aligned handheld frame:
-    //   yaw_axis   = rel_g (world vertical; defaults to +Z -> -uz for cursor X)
-    //   right_axis = normalize(cross(forward_body, yaw_axis)) -> defaults to (+1,0,0) or (-1,0,0) when flipped 180
-    float yaw_x = rel_gx_;
-    float yaw_y = rel_gy_;
-    float yaw_z = rel_gz_;
-
-    float fwd_y = cfg.flip_180 ? -1.0f : 1.0f;
-    // cross((0, fwd_y, 0), (yaw_x, yaw_y, yaw_z)) = (fwd_y * yaw_z, 0, -fwd_y * yaw_x)
-    float rx_ax = fwd_y * yaw_z;
-    float ry_ax = 0.0f;
-    float rz_ax = -fwd_y * yaw_x;
-    float r_norm = std::sqrt(rx_ax * rx_ax + rz_ax * rz_ax);
-    if (r_norm > 0.1f) {
-        rx_ax /= r_norm;
-        rz_ax /= r_norm;
-    } else {
-        rx_ax = cfg.flip_180 ? -1.0f : 1.0f;
-        rz_ax = 0.0f;
-    }
-
-    float rx = -(ux * yaw_x + uy * yaw_y + uz * yaw_z);
-    float ry = -(ux * rx_ax + uy * ry_ax + uz * rz_ax);
+    const auto rates = airmouse_project_motion(ux, uy, uz, rel_gx_, rel_gy_, rel_gz_,
+                                                cfg.flip_180);
+    float rx = rates.horizontal;
+    float ry = rates.vertical;
 
     if (cfg.swap_xy) {
         float tmp = rx;

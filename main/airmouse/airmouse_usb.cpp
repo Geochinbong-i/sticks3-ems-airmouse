@@ -1,9 +1,14 @@
 #include "airmouse_usb.h"
+#include "power_save.h"
 
 extern "C" {
 #include "tinyusb.h"
 #include "class/hid/hid_device.h"
 }
+
+#include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #include <cstdint>
 
@@ -60,8 +65,11 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
 } // extern "C"
 
 bool airmouse_usb_start() {
-    s_usb_active = true;
-    if (s_usb_inited) return true;
+    if (s_usb_inited) {
+        s_usb_active = true;
+        return true;
+    }
+    if (!power_save_keep_usb_awake()) return false;
 
     tinyusb_config_t tusb_cfg = {};
     tusb_cfg.device_descriptor = nullptr;
@@ -74,21 +82,28 @@ bool airmouse_usb_start() {
     tusb_cfg.vbus_monitor_io = -1;
 
     if (tinyusb_driver_install(&tusb_cfg) != ESP_OK) {
+        power_save_release_usb();
         return false;
     }
     s_usb_inited = true;
+    s_usb_active = true;
     return true;
 }
 
 void airmouse_usb_stop() {
-    if (s_usb_inited && tud_mounted() && tud_hid_ready()) {
-        tud_hid_mouse_report(HID_ITF_PROTOCOL_MOUSE, 0, 0, 0, 0, 0);
-    }
     s_usb_active = false;
-}
-
-bool airmouse_usb_was_inited() {
-    return s_usb_inited;
+    if (!s_usb_inited) return;
+    if (tud_mounted() && tud_hid_ready() &&
+        tud_hid_mouse_report(HID_ITF_PROTOCOL_MOUSE, 0, 0, 0, 0, 0)) {
+        vTaskDelay(pdMS_TO_TICKS(12));
+    }
+    const esp_err_t result = tinyusb_driver_uninstall();
+    if (result == ESP_OK) {
+        s_usb_inited = false;
+        power_save_release_usb();
+    } else {
+        ESP_LOGW("sticks3_usb", "USB HID teardown: %s", esp_err_to_name(result));
+    }
 }
 
 bool airmouse_usb_is_connected() {

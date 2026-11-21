@@ -4,9 +4,11 @@
 #include "airmouse_math.h"
 #include "app_settings.h"
 #include "input_util.h"
+#include "imu_cal.h"
 #include "sound_fx.h"
 #include "timer/ems_timer_ui.h"
 #include "ui_common.h"
+#include "time_sync.h"
 
 #include "M5Unified.h"
 #include "esp_timer.h"
@@ -85,7 +87,7 @@ void draw_airmouse_frame(M5Canvas &canvas,
         canvas.print("Hold A+B : Exit");
 
         ui_draw_footer2(canvas, "B: Zero Held Pose", "Hold A+B : Go Home");
-        canvas.pushSprite(0, 0);
+        ui_present(canvas);
         return;
     }
 
@@ -174,7 +176,7 @@ void draw_airmouse_frame(M5Canvas &canvas,
     canvas.print("RMB");
 
     ui_draw_footer2(canvas, "A: Click  B: Right", "Hold B:Scr AB:Menu");
-    canvas.pushSprite(0, 0);
+    ui_present(canvas);
 }
 
 void perform_relative_zero(M5Canvas &canvas, AirMouseTransport transport,
@@ -245,50 +247,10 @@ void perform_relative_zero(M5Canvas &canvas, AirMouseTransport transport,
     canvas.print("Resuming cursor...");
 
     ui_draw_footer2(canvas, "A: Click  B: Right", "Hold B:Scr AB:Menu");
-    canvas.pushSprite(0, 0);
+    ui_present(canvas);
 
     sound_fx_confirm();
     vTaskDelay(pdMS_TO_TICKS(420));
-    input_wait_all_release();
-}
-
-void show_usb_exit_notice(M5Canvas &canvas) {
-    int w = canvas.width();
-    canvas.fillScreen(0x0B0F17);
-    ui_draw_header(canvas, "USB HID", 0x11493A, 0xFFFFFF);
-
-    canvas.drawRoundRect(6, 36, w - 12, 152, 7, 0x26A69A);
-    canvas.fillRoundRect(7, 37, w - 14, 150, 6, 0x0D191B);
-
-    canvas.setFont(&fonts::Font2);
-    canvas.setTextSize(1);
-    canvas.setTextWrap(false);
-    canvas.setTextColor(0x80CBC4, 0x0D191B);
-    canvas.setCursor(13, 46);
-    canvas.print("USB HID PAUSED");
-
-    canvas.setTextColor(0xCFD8DC, 0x0D191B);
-    canvas.setCursor(13, 74);
-    canvas.print("USB-OTG is active.");
-    canvas.setCursor(13, 92);
-    canvas.print("Reboot in Settings");
-    canvas.setCursor(13, 110);
-    canvas.print("for USB Serial log.");
-
-    canvas.fillRoundRect(13, 144, w - 26, 28, 4, 0x143D38);
-    canvas.setTextColor(0x80CBC4, 0x143D38);
-    canvas.setCursor(18, 150);
-    canvas.print("A or B : Return");
-
-    ui_draw_footer2(canvas, "Press A or B: Home", "Auto close in 1.3s");
-    canvas.pushSprite(0, 0);
-
-    int64_t until_ms = input_now_ms() + 1300;
-    while (input_now_ms() < until_ms) {
-        input_update();
-        if (input_a_pressed() || input_b_pressed()) break;
-        vTaskDelay(pdMS_TO_TICKS(20));
-    }
     input_wait_all_release();
 }
 
@@ -305,7 +267,17 @@ void airmouse_ui_run(AirMouseTransport transport) {
         return;
     }
 
-    bool ok = (transport == AirMouseTransport::Ble) ? airmouse_ble_start() : airmouse_usb_start();
+    if (transport == AirMouseTransport::Ble) time_sync_cancel_boot_ble();
+    bool ok = transport == AirMouseTransport::Ble ? airmouse_ble_start() : airmouse_usb_start();
+    if (ok && transport == AirMouseTransport::Ble) {
+        const int64_t deadline = input_now_ms() + 5000;
+        while (airmouse_ble_status() == BleStatus::Starting && input_now_ms() < deadline) {
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
+        const BleStatus status = airmouse_ble_status();
+        ok = status == BleStatus::Advertising || status == BleStatus::Connected;
+        if (!ok) airmouse_ble_stop();
+    }
     if (!ok) {
         M5.Display.fillScreen(0x000000);
         M5.Display.setFont(&fonts::Font2);
@@ -320,21 +292,9 @@ void airmouse_ui_run(AirMouseTransport transport) {
     canvas.createSprite(M5.Display.width(), M5.Display.height());
 
     GyroAirMouseFilter filter;
-    if (g_settings.imu_abs_valid) {
-        // Use clean flat-surface NVS calibration directly (never corrupt bias with button-press jerk)
+    bool needs_initial_calibration = !g_settings.imu_abs_valid;
+    if (!needs_initial_calibration) {
         filter.reset_bias(g_settings.imu_abs_gx, g_settings.imu_abs_gy, g_settings.imu_abs_gz);
-    } else {
-        // No NVS abs calibration yet: do a brief settle ONLY accepting samples when steady
-        filter.calib_begin();
-        for (int i = 0; i < 20; i++) {
-            M5.Imu.update();
-            auto d = M5.Imu.getImuData();
-            if (std::fabs(d.gyro.x) < 12.0f && std::fabs(d.gyro.y) < 12.0f && std::fabs(d.gyro.z) < 12.0f) {
-                filter.calib_add_sample(d.gyro.x, d.gyro.y, d.gyro.z);
-            }
-            vTaskDelay(pdMS_TO_TICKS(10));
-        }
-        filter.calib_finish();
     }
     sound_fx_confirm();
     input_wait_all_release();
@@ -342,6 +302,8 @@ void airmouse_ui_run(AirMouseTransport transport) {
     AirMouseButtonGuard btn_guard;
     uint8_t prev_buttons = 0;
     bool was_connected = false;
+    bool imu_active = false;
+    int64_t imu_retry_ms = 0;
     bool rel_pose_active = false;
     int last_ble_batt = -1;
     int64_t last_batt_ms = 0;
@@ -357,6 +319,7 @@ void airmouse_ui_run(AirMouseTransport transport) {
         AirMouseBtnState bst = btn_guard.step(now_ms, input_a_down(), input_b_down());
 
         if (bst.exit_requested) {
+            imu_set_idle();
             if (transport == AirMouseTransport::Ble) {
                 airmouse_ble_stop();
             } else {
@@ -364,9 +327,6 @@ void airmouse_ui_run(AirMouseTransport transport) {
             }
             sound_fx_click();
             input_wait_ab_release();
-            if (transport == AirMouseTransport::Usb && airmouse_usb_was_inited()) {
-                show_usb_exit_notice(canvas);
-            }
             canvas.deleteSprite();
             return;
         }
@@ -375,7 +335,8 @@ void airmouse_ui_run(AirMouseTransport transport) {
             sound_fx_click();
         }
 
-        if (bst.rel_cal_requested) {
+        if (bst.rel_cal_requested && imu_set_active()) {
+            imu_active = true;
             perform_relative_zero(canvas, transport, filter);
             rel_pose_active = true;
             preview_x = 0.5f;
@@ -386,37 +347,57 @@ void airmouse_ui_run(AirMouseTransport transport) {
             continue;
         }
 
-        int64_t now_us = esp_timer_get_time();
-        float dt = (float)(now_us - last_us) / 1000000.0f;
-        last_us = now_us;
-
-        M5.Imu.update();
-        auto imu = M5.Imu.getImuData();
-
-        AirMouseConfig cfg;
-        cfg.sensitivity = g_settings.air_sensitivity;
-        cfg.invert_x = g_settings.air_invert_x;
-        cfg.invert_y = g_settings.air_invert_y;
-        cfg.swap_xy = g_settings.air_swap_xy;
-        cfg.natural_scroll = g_settings.air_natural_scroll;
-        cfg.flip_180 = (g_settings.rotation == 2);
-
-        AirMouseDelta d = filter.update(imu.gyro.x, imu.gyro.y, imu.gyro.z,
-                                        dt, cfg, bst.scroll_mode, bst.paused);
-
-        if (!bst.paused && !bst.scroll_mode) {
-            preview_x += (float)d.dx / 260.0f;
-            preview_y += (float)d.dy / 260.0f;
-            if (preview_x < 0.05f) preview_x = 0.05f;
-            if (preview_x > 0.95f) preview_x = 0.95f;
-            if (preview_y < 0.05f) preview_y = 0.05f;
-            if (preview_y > 0.95f) preview_y = 0.95f;
+        const bool connected = (transport == AirMouseTransport::Ble)
+            ? airmouse_ble_is_connected() : airmouse_usb_is_connected();
+        const bool suspended = (transport == AirMouseTransport::Usb) && airmouse_usb_is_suspended();
+        const bool track_motion = connected && !suspended && !bst.paused;
+        if (track_motion && !imu_active && now_ms >= imu_retry_ms) {
+            imu_active = imu_set_active();
+            imu_retry_ms = now_ms + 500;
+            if (imu_active && needs_initial_calibration) {
+                filter.calib_begin();
+                for (int i = 0; i < 20; i++) {
+                    M5.Imu.update();
+                    const auto &sample = M5.Imu.getImuData();
+                    if (std::fabs(sample.gyro.x) < 12.0f && std::fabs(sample.gyro.y) < 12.0f &&
+                        std::fabs(sample.gyro.z) < 12.0f) {
+                        filter.calib_add_sample(sample.gyro.x, sample.gyro.y, sample.gyro.z);
+                    }
+                    vTaskDelay(pdMS_TO_TICKS(10));
+                }
+                filter.calib_finish();
+                needs_initial_calibration = false;
+            }
+            last_us = esp_timer_get_time();
+        } else if (!track_motion && imu_active) {
+            imu_set_idle();
+            imu_active = false;
+            imu_retry_ms = 0;
+            filter.reset_motion();
         }
 
-        bool connected = (transport == AirMouseTransport::Ble)
-                             ? airmouse_ble_is_connected()
-                             : airmouse_usb_is_connected();
-        bool suspended = (transport == AirMouseTransport::Usb) && airmouse_usb_is_suspended();
+        AirMouseDelta d{};
+        if (track_motion && imu_active) {
+            const int64_t now_us = esp_timer_get_time();
+            const float dt = (float)(now_us - last_us) / 1000000.0f;
+            last_us = now_us;
+
+            M5.Imu.update();
+            const auto &imu = M5.Imu.getImuData();
+            AirMouseConfig cfg;
+            cfg.sensitivity = g_settings.air_sensitivity;
+            cfg.invert_x = g_settings.air_invert_x;
+            cfg.invert_y = g_settings.air_invert_y;
+            cfg.swap_xy = g_settings.air_swap_xy;
+            cfg.natural_scroll = g_settings.air_natural_scroll;
+            cfg.flip_180 = (g_settings.rotation == 2);
+            d = filter.update(imu.gyro.x, imu.gyro.y, imu.gyro.z, dt, cfg, bst.scroll_mode, false);
+
+            if (!bst.scroll_mode && ui_screen_is_on()) {
+                preview_x = std::clamp(preview_x + (float)d.dx / 260.0f, 0.05f, 0.95f);
+                preview_y = std::clamp(preview_y + (float)d.dy / 260.0f, 0.05f, 0.95f);
+            }
+        }
 
         if (transport == AirMouseTransport::Ble && connected) {
             if (!was_connected || (now_ms - last_batt_ms) >= 10000) {
@@ -441,13 +422,17 @@ void airmouse_ui_run(AirMouseTransport transport) {
             prev_buttons = 0;
         }
 
-        if ((now_ms - last_draw_ms) >= 40) {
+        if (ui_screen_is_on() && (now_ms - last_draw_ms) >= 40) {
             last_draw_ms = now_ms;
             draw_airmouse_frame(canvas, transport, connected, suspended,
                                 bst.paused, bst.scroll_mode, rel_pose_active,
                                 bst.buttons, preview_x, preview_y, now_ms);
         }
 
-        vTaskDelay(pdMS_TO_TICKS(10));
+        if (connected && !suspended) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        } else {
+            input_idle_delay(20);
+        }
     }
 }

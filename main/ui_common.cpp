@@ -1,8 +1,49 @@
 #include "ui_common.h"
 #include "app_settings.h"
+#include "ems_timer_ui.h"
+#include "esp_timer.h"
+#include "power_save.h"
 
 #include <cstdio>
 #include <cstring>
+
+static bool s_screen_off = false;
+static int64_t s_last_activity_ms = 0;
+
+void ui_note_activity(int64_t now_ms) {
+    s_last_activity_ms = now_ms;
+}
+
+bool ui_update_screen_power(int64_t now_ms, bool button_down) {
+    static unsigned last_alarm = 0;
+    const unsigned alarm = ems_timer_alarm_sequence();
+    const bool new_alarm = alarm != last_alarm;
+    last_alarm = alarm;
+
+    if (s_last_activity_ms == 0 || button_down || new_alarm) ui_note_activity(now_ms);
+    if (s_screen_off && (button_down || new_alarm || g_settings.screen_off_sec == 0)) {
+        s_screen_off = false;
+        power_save_allow_screen_idle(false);
+        M5.Display.wakeup();
+        ui_apply_brightness();
+        return button_down;
+    }
+    if (!s_screen_off && g_settings.screen_off_sec > 0 &&
+        now_ms - s_last_activity_ms >= g_settings.screen_off_sec * 1000LL) {
+        s_screen_off = true;
+        M5.Display.sleep();
+        power_save_allow_screen_idle(true);
+    }
+    return false;
+}
+
+bool ui_screen_is_on() {
+    return !s_screen_off;
+}
+
+void ui_present(M5Canvas &canvas) {
+    if (!s_screen_off) canvas.pushSprite(0, 0);
+}
 
 void ui_apply_brightness() {
     int pct = g_settings.brightness_pct;
@@ -14,13 +55,19 @@ void ui_apply_brightness() {
 }
 
 void ui_draw_battery_badge(M5Canvas &canvas, int right_x, int hdr_h, uint32_t bg_col) {
-    int batt = M5.Power.getBatteryLevel();
+    static int batt = -1;
+    static bool charging = false;
+    static int64_t next_sample_us = 0;
+    const int64_t now_us = esp_timer_get_time();
+    if (now_us >= next_sample_us) {
+        batt = M5.Power.getBatteryLevel();
+        if (batt > 100) batt = 100;
+        charging = M5.Power.isCharging() == m5::Power_Class::is_charging;
+        next_sample_us = now_us + 2000000;
+    }
     if (batt < 0) return;
-    if (batt > 100) batt = 100;
 
-    bool charging = (M5.Power.isCharging() == m5::Power_Class::is_charging);
-
-    char bstr[8];
+    char bstr[16];
     std::snprintf(bstr, sizeof(bstr), "%d%%", batt);
 
     canvas.setFont(&fonts::Font2);
@@ -70,7 +117,7 @@ void ui_draw_battery_badge(M5Canvas &canvas, int right_x, int hdr_h, uint32_t bg
 
 void ui_draw_header(M5Canvas &canvas, const char *title, uint32_t hdr_col,
                     uint32_t fg_col, const char *badge_txt,
-                    uint32_t badge_bg, uint32_t badge_fg) {
+                    uint32_t badge_bg, uint32_t badge_fg, int title_x) {
     int w = canvas.width();
     constexpr int kHdrH = 22;
 
@@ -81,11 +128,11 @@ void ui_draw_header(M5Canvas &canvas, const char *title, uint32_t hdr_col,
     canvas.setTextSize(1);
     canvas.setTextWrap(false);
     canvas.setTextColor(fg_col, hdr_col);
-    canvas.setCursor(4, 3);
+    canvas.setCursor(title_x, 3);
     canvas.print(title);
 
     if (badge_txt && badge_txt[0] != '\0') {
-        int bx = 4 + canvas.textWidth(title) + 4;
+        int bx = title_x + canvas.textWidth(title) + 4;
         int bw = canvas.textWidth(badge_txt) + 6;
         if (bx + bw < w - 42) {
             canvas.fillRoundRect(bx, 3, bw, 15, 2, badge_bg);

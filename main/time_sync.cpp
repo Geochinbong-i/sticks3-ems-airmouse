@@ -14,9 +14,9 @@
 #include "esp_netif_sntp.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/event_groups.h"
 #include "freertos/task.h"
 
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -25,6 +25,11 @@
 namespace {
 
 static constexpr const char *kTag = "time_sync";
+constexpr uint8_t kRx8130Address = 0x32;
+constexpr uint8_t kRx8130FlagRegister = 0x1D;
+constexpr uint8_t kRx8130OscillatorStopped = 0x02;
+// RX8130 flags are write-zero-to-clear. Keep the other flags set in the write.
+constexpr uint8_t kRx8130ClearOscillatorStopped = 0xBC;
 
 bool s_netif_ready = false;
 esp_netif_t *s_ap_netif = nullptr;
@@ -32,18 +37,30 @@ esp_netif_t *s_sta_netif = nullptr;
 httpd_handle_t s_httpd = nullptr;
 bool s_wifi_started = false;
 bool s_ble_sync_started = false;
+constexpr int64_t kManualSyncWindowMs = 120000;
+constexpr int64_t kBleStartTimeoutMs = 5000;
+bool s_boot_ble_pending = false;
+int64_t s_boot_ble_deadline_ms = 0;
+
+enum class WifiSync { Idle, Running, Synced, Failed };
+std::atomic<WifiSync> s_wifi_sync{WifiSync::Idle};
+bool s_wifi_sync_at_boot = false;
+struct WifiCredentials {
+    char ssid[33];
+    char pass[65];
+} s_sta_credentials{};
 
 portMUX_TYPE s_sync_mux = portMUX_INITIALIZER_UNLOCKED;
-volatile bool s_ble_pending = false;
+bool s_ble_pending = false;
 uint8_t s_ble_buf[32]{};
 uint16_t s_ble_len = 0;
 
-volatile bool s_http_pending = false;
+bool s_http_pending = false;
 int64_t s_http_epoch = 0;
 bool s_http_has_tz = false;
 int s_http_tz_hours = 9;
 
-volatile bool s_wifi_cfg_pending = false;
+bool s_wifi_cfg_pending = false;
 char s_pending_ssid[33]{};
 char s_pending_pass[65]{};
 
@@ -100,10 +117,7 @@ function saveWifi(ev){
 }
 </script></body></html>)rawhtml";
 
-void write_rtc_from_time_t(time_t utc_sec) {
-    struct timeval tv = { .tv_sec = utc_sec, .tv_usec = 0 };
-    settimeofday(&tv, nullptr);
-
+void save_rtc_from_time_t(time_t utc_sec) {
     if (!M5.Rtc.isEnabled()) return;
     struct tm local_tm{};
     localtime_r(&utc_sec, &local_tm);
@@ -117,6 +131,34 @@ void write_rtc_from_time_t(time_t utc_sec) {
     dt.time.minutes = (int8_t)local_tm.tm_min;
     dt.time.seconds = (int8_t)local_tm.tm_sec;
     M5.Rtc.setDateTime(dt);
+    m5::rtc_datetime_t readback{};
+    if (!M5.Rtc.getDateTime(&readback)) {
+        ESP_LOGW(kTag, "RTC readback failed after setting time");
+        return;
+    }
+    struct tm rtc_tm{};
+    rtc_tm.tm_year = readback.date.year - 1900;
+    rtc_tm.tm_mon = readback.date.month - 1;
+    rtc_tm.tm_mday = readback.date.date;
+    rtc_tm.tm_hour = readback.time.hours;
+    rtc_tm.tm_min = readback.time.minutes;
+    rtc_tm.tm_sec = readback.time.seconds;
+    const double delta = difftime(mktime(&rtc_tm), utc_sec);
+    if (delta < 0 || delta > 1) {
+        ESP_LOGW(kTag, "RTC readback differs from synced time");
+        return;
+    }
+    auto *rtc = M5.Rtc.getRtcInstancePtr();
+    if (rtc->getAddress() == kRx8130Address &&
+        !rtc->writeRegister8(kRx8130FlagRegister, kRx8130ClearOscillatorStopped)) {
+        ESP_LOGW(kTag, "Could not clear RX8130 clock-loss flag after sync");
+    }
+}
+
+void write_rtc_from_time_t(time_t utc_sec) {
+    struct timeval tv = { .tv_sec = utc_sec, .tv_usec = 0 };
+    settimeofday(&tv, nullptr);
+    save_rtc_from_time_t(utc_sec);
 }
 
 void write_rtc_from_local_fields(int year, int month, int day, int hour, int min, int sec) {
@@ -150,10 +192,10 @@ bool ensure_netif_ready() {
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return false;
     err = esp_event_loop_create_default();
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return false;
-    s_ap_netif = esp_netif_create_default_wifi_ap();
-    s_sta_netif = esp_netif_create_default_wifi_sta();
-    s_netif_ready = true;
-    return true;
+    if (!s_ap_netif) s_ap_netif = esp_netif_create_default_wifi_ap();
+    if (!s_sta_netif) s_sta_netif = esp_netif_create_default_wifi_sta();
+    s_netif_ready = s_ap_netif && s_sta_netif;
+    return s_netif_ready;
 }
 
 esp_err_t http_root_handler(httpd_req_t *req) {
@@ -177,7 +219,7 @@ esp_err_t http_sync_handler(httpd_req_t *req) {
 
     char tz_s[16]{};
     bool has_tz = false;
-    int tz_hr = g_settings.tz_offset_hours;
+    int tz_hr = 0;
     if (httpd_query_key_value(q, "tz", tz_s, sizeof(tz_s)) == ESP_OK) {
         int v = (int)std::strtol(tz_s, nullptr, 10);
         if (v >= -12 && v <= 14) {
@@ -198,24 +240,29 @@ esp_err_t http_sync_handler(httpd_req_t *req) {
 }
 
 esp_err_t http_wifi_handler(httpd_req_t *req) {
-    char q[192]{};
+    // Each credential byte can occupy three URL-encoded characters.
+    char q[3 * (32 + 64) + sizeof("ssid=&pass=")]{};
     if (httpd_req_get_url_query_str(req, q, sizeof(q)) != ESP_OK) {
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing query");
     }
-    char ssid[64]{};
-    char pass[96]{};
+    char ssid[3 * 32 + 1]{};
+    char pass[3 * 64 + 1]{};
     if (httpd_query_key_value(q, "ssid", ssid, sizeof(ssid)) != ESP_OK) {
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing ssid");
     }
-    httpd_query_key_value(q, "pass", pass, sizeof(pass));
+    const esp_err_t pass_result = httpd_query_key_value(q, "pass", pass, sizeof(pass));
+    if (pass_result != ESP_OK && pass_result != ESP_ERR_NOT_FOUND) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid password");
+    }
     url_decode_inplace(ssid);
     url_decode_inplace(pass);
+    if (ssid[0] == '\0' || std::strlen(ssid) > 32 || std::strlen(pass) > 64) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid Wi-Fi credentials");
+    }
 
     portENTER_CRITICAL(&s_sync_mux);
-    std::strncpy(s_pending_ssid, ssid, sizeof(s_pending_ssid) - 1);
-    s_pending_ssid[sizeof(s_pending_ssid) - 1] = '\0';
-    std::strncpy(s_pending_pass, pass, sizeof(s_pending_pass) - 1);
-    s_pending_pass[sizeof(s_pending_pass) - 1] = '\0';
+    std::strcpy(s_pending_ssid, ssid);
+    std::strcpy(s_pending_pass, pass);
     s_wifi_cfg_pending = true;
     portEXIT_CRITICAL(&s_sync_mux);
 
@@ -274,92 +321,86 @@ bool start_ap_portal() {
     return true;
 }
 
-struct StaSyncCtx {
-    EventGroupHandle_t eg;
-    int retries;
-};
-
-void sta_event_cb(void *arg, esp_event_base_t base, int32_t id, void *data) {
-    (void)data;
-    auto *ctx = (StaSyncCtx *)arg;
-    if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
-    } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
-        if (ctx->retries < 2) {
-            ctx->retries++;
-            esp_wifi_connect();
-        } else {
-            xEventGroupSetBits(ctx->eg, BIT1);
-        }
-    } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
-        xEventGroupSetBits(ctx->eg, BIT0);
-    }
-}
-
-bool run_sta_sntp(const char *ssid, const char *pass, M5Canvas &canvas) {
-    stop_active_transports();
-    if (!ssid || ssid[0] == '\0') return false;
+bool run_sta_sntp(const WifiCredentials &credentials) {
     if (!ensure_netif_ready()) return false;
 
     wifi_init_config_t init_cfg = WIFI_INIT_CONFIG_DEFAULT();
     if (esp_wifi_init(&init_cfg) != ESP_OK) return false;
 
-    EventGroupHandle_t eg = xEventGroupCreate();
-    StaSyncCtx ctx{eg, 0};
-    esp_event_handler_instance_t inst_wifi = nullptr;
-    esp_event_handler_instance_t inst_ip = nullptr;
-    esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &sta_event_cb, &ctx, &inst_wifi);
-    esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &sta_event_cb, &ctx, &inst_ip);
-
     wifi_config_t sta_cfg{};
-    std::strncpy((char *)sta_cfg.sta.ssid, ssid, sizeof(sta_cfg.sta.ssid) - 1);
-    if (pass && pass[0] != '\0') {
-        std::strncpy((char *)sta_cfg.sta.password, pass, sizeof(sta_cfg.sta.password) - 1);
-    } else {
-        sta_cfg.sta.threshold.authmode = WIFI_AUTH_OPEN;
-    }
+    std::memcpy(sta_cfg.sta.ssid, credentials.ssid, std::strlen(credentials.ssid));
+    std::memcpy(sta_cfg.sta.password, credentials.pass, std::strlen(credentials.pass));
+    sta_cfg.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+    sta_cfg.sta.failure_retry_cnt = 2;
 
-    esp_wifi_set_mode(WIFI_MODE_STA);
-    esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
-    esp_wifi_start();
-    s_wifi_started = true;
-
-    canvas.fillScreen(0x0B0F17);
-    ui_draw_header(canvas, "WI-FI SNTP", 0x1D283A, 0x80D8FF);
-    canvas.setFont(&fonts::Font2);
-    canvas.setTextColor(0xE2E8F0, 0x0B0F17);
-    canvas.setCursor(10, 64);
-    canvas.print("Connecting Wi-Fi");
-    canvas.setCursor(10, 84);
-    canvas.print(ssid);
-    canvas.pushSprite(0, 0);
-
-    EventBits_t bits = xEventGroupWaitBits(eg, BIT0 | BIT1, pdFALSE, pdFALSE, pdMS_TO_TICKS(8000));
-    bool ok = false;
-    if (bits & BIT0) {
-        canvas.setTextColor(0x80D8FF, 0x0B0F17);
-        canvas.setCursor(10, 114);
-        canvas.print("Querying NTP...");
-        canvas.pushSprite(0, 0);
-
-        esp_sntp_config_t sntp_cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
-        if (esp_netif_sntp_init(&sntp_cfg) == ESP_OK) {
-            if (esp_netif_sntp_sync_wait(pdMS_TO_TICKS(6000)) == ESP_OK) {
-                time_t now = std::time(nullptr);
-                if (now >= 1700000000LL) {
-                    write_rtc_from_time_t(now);
-                    ok = true;
+    bool synced = false;
+    if (esp_wifi_set_storage(WIFI_STORAGE_RAM) == ESP_OK &&
+        esp_wifi_set_mode(WIFI_MODE_STA) == ESP_OK &&
+        esp_wifi_set_config(WIFI_IF_STA, &sta_cfg) == ESP_OK &&
+        esp_wifi_start() == ESP_OK) {
+        if (esp_wifi_connect() == ESP_OK) {
+            const int64_t deadline = input_now_ms() + 8000;
+            while (input_now_ms() < deadline) {
+                esp_netif_ip_info_t ip{};
+                if (esp_netif_is_netif_up(s_sta_netif) &&
+                    esp_netif_get_ip_info(s_sta_netif, &ip) == ESP_OK && ip.ip.addr != 0) {
+                    esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+                    if (esp_netif_sntp_init(&config) == ESP_OK) {
+                        synced = esp_netif_sntp_sync_wait(pdMS_TO_TICKS(6000)) == ESP_OK
+                              && time_sync_is_valid();
+                        esp_netif_sntp_deinit();
+                    }
+                    break;
                 }
+                vTaskDelay(pdMS_TO_TICKS(100));
             }
-            esp_netif_sntp_deinit();
         }
+        esp_wifi_stop();
     }
+    esp_wifi_deinit();
+    return synced;
+}
 
-    esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, inst_wifi);
-    esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, inst_ip);
-    vEventGroupDelete(eg);
-    stop_active_transports();
-    return ok;
+bool start_sta_sntp(bool at_boot) {
+    if (s_wifi_sync.load() == WifiSync::Running || g_settings.wifi_ssid[0] == '\0') return false;
+    std::memcpy(s_sta_credentials.ssid, g_settings.wifi_ssid, sizeof(s_sta_credentials.ssid));
+    std::memcpy(s_sta_credentials.pass, g_settings.wifi_pass, sizeof(s_sta_credentials.pass));
+    s_wifi_sync_at_boot = at_boot;
+    s_wifi_sync.store(WifiSync::Running);
+    if (xTaskCreate([](void *) {
+            const bool synced = run_sta_sntp(s_sta_credentials);
+            s_wifi_sync.store(synced ? WifiSync::Synced : WifiSync::Failed);
+            vTaskDelete(nullptr);
+        }, "time_sntp", 4096, nullptr, 3, nullptr) != pdPASS) {
+        s_wifi_sync.store(WifiSync::Failed);
+        return false;
+    }
+    return true;
+}
+
+enum class BleSyncResult { None, Synced, Invalid };
+
+BleSyncResult apply_pending_ble_time() {
+    uint8_t buf[sizeof(s_ble_buf)]{};
+    uint16_t len = 0;
+    portENTER_CRITICAL(&s_sync_mux);
+    if (s_ble_pending) {
+        len = s_ble_len;
+        std::memcpy(buf, s_ble_buf, len);
+        s_ble_pending = false;
+    }
+    portEXIT_CRITICAL(&s_sync_mux);
+
+    if (len == 0) return BleSyncResult::None;
+    const ParsedTimePayload p = parse_ble_time_payload(buf, len);
+    if (p.kind == TimePayloadKind::LocalFields) {
+        write_rtc_from_local_fields(p.year, p.month, p.day, p.hour, p.min, p.sec);
+    } else if (p.kind == TimePayloadKind::UnixEpochUtc) {
+        write_rtc_from_time_t((time_t)p.epoch_sec);
+    } else {
+        return BleSyncResult::Invalid;
+    }
+    return BleSyncResult::Synced;
 }
 
 } // namespace
@@ -378,8 +419,22 @@ void time_sync_init_from_rtc() {
         return;
     }
 
-    auto dt = M5.Rtc.getDateTime();
-    if (dt.date.year >= 2024 && dt.date.year <= 2099 &&
+    auto *rtc = M5.Rtc.getRtcInstancePtr();
+    if (rtc->getAddress() == kRx8130Address) {
+        uint8_t flags = 0;
+        if (!rtc->readRegister(kRx8130FlagRegister, &flags, 1) ||
+            (flags & kRx8130OscillatorStopped)) {
+            // M5.begin() may already have copied the RTC calendar into the system clock.
+            struct timeval invalid_time{};
+            settimeofday(&invalid_time, nullptr);
+            ESP_LOGW(kTag, "RX8130 clock lost or unreadable, waiting for time sync");
+            return;
+        }
+    }
+
+    m5::rtc_datetime_t dt{};
+    if (M5.Rtc.getDateTime(&dt) &&
+        dt.date.year >= 2024 && dt.date.year <= 2099 &&
         dt.date.month >= 1 && dt.date.month <= 12 &&
         dt.date.date >= 1 && dt.date.date <= 31) {
         struct tm t{};
@@ -398,6 +453,74 @@ void time_sync_init_from_rtc() {
                      dt.date.year, dt.date.month, dt.date.date,
                      dt.time.hours, dt.time.minutes, dt.time.seconds);
         }
+    } else {
+        struct timeval invalid_time{};
+        settimeofday(&invalid_time, nullptr);
+        ESP_LOGW(kTag, "RTC calendar unavailable or invalid at boot");
+    }
+}
+
+void time_sync_save_rtc() {
+    const time_t now = std::time(nullptr);
+    if (now >= 1700000000LL) save_rtc_from_time_t(now);
+}
+
+BootTimeSync time_sync_boot_source() {
+    const WifiSync wifi = s_wifi_sync.load();
+    if (s_wifi_sync_at_boot && (wifi == WifiSync::Running || wifi == WifiSync::Synced)) {
+        return BootTimeSync::WiFi;
+    }
+    if (s_boot_ble_pending || s_boot_ble_deadline_ms != 0) return BootTimeSync::Ble;
+    return BootTimeSync::Idle;
+}
+
+void time_sync_start_at_boot() {
+    s_boot_ble_pending = g_settings.boot_ble_time_sync;
+    start_sta_sntp(true);
+}
+
+void time_sync_cancel_boot_ble() {
+    s_boot_ble_pending = false;
+    if (s_boot_ble_deadline_ms != 0) {
+        s_boot_ble_deadline_ms = 0;
+        stop_active_transports();
+        portENTER_CRITICAL(&s_sync_mux);
+        s_ble_pending = false;
+        portEXIT_CRITICAL(&s_sync_mux);
+    }
+}
+
+void time_sync_poll() {
+    if (s_wifi_sync.load() == WifiSync::Synced) {
+        time_sync_save_rtc();
+        if (s_wifi_sync_at_boot) {
+            ESP_LOGI(kTag, "Boot time synced by SNTP");
+            s_wifi_sync_at_boot = false;
+            time_sync_cancel_boot_ble();
+        }
+        s_wifi_sync.store(WifiSync::Idle);
+    }
+    if (s_wifi_sync_at_boot && s_wifi_sync.load() == WifiSync::Failed) {
+        ESP_LOGW(kTag, "Boot SNTP did not sync on saved Wi-Fi");
+        s_wifi_sync_at_boot = false;
+    }
+    if (s_boot_ble_pending && s_wifi_sync.load() != WifiSync::Running) {
+        s_boot_ble_pending = false;
+        if (airmouse_ble_start_time_sync(on_ble_time_write_cb, true)) {
+            s_ble_sync_started = true;
+            s_boot_ble_deadline_ms = input_now_ms() + 30000;
+        }
+    }
+    if (s_boot_ble_deadline_ms != 0) {
+        if (apply_pending_ble_time() == BleSyncResult::Synced) {
+            ESP_LOGI(kTag, "Boot time synced by BLE");
+            time_sync_cancel_boot_ble();
+        } else if (airmouse_ble_status() == BleStatus::Failed) {
+            time_sync_cancel_boot_ble();
+        } else if (input_now_ms() >= s_boot_ble_deadline_ms) {
+            ESP_LOGW(kTag, "Boot BLE time sync timed out");
+            time_sync_cancel_boot_ble();
+        }
     }
 }
 
@@ -406,6 +529,7 @@ bool time_sync_is_valid() {
 }
 
 void time_sync_ui_run() {
+    time_sync_cancel_boot_ble();
     M5Canvas canvas(&M5.Display);
     canvas.createSprite(M5.Display.width(), M5.Display.height());
     input_wait_all_release();
@@ -420,41 +544,48 @@ void time_sync_ui_run() {
     const char *banner_msg = "Press B to start";
     uint32_t banner_col = 0xB0BEC5;
     int64_t last_draw_ms = 0;
+    bool manual_sntp = false;
+    bool manual_ble_requested = false;
+    int64_t ap_deadline_ms = 0;
+    int64_t ble_deadline_ms = 0;
+    int64_t ble_start_deadline_ms = 0;
+    int64_t ble_shutdown_ms = 0;
+    BleStatus last_ble_status = BleStatus::Idle;
 
     while (true) {
         input_update();
         int64_t now_ms = input_now_ms();
 
-        // Check pending HTTP push update (AP portal)
-        if (s_http_pending) {
-            int64_t ep = 0;
-            bool has_tz = false;
-            int tz_hr = 9;
-            portENTER_CRITICAL(&s_sync_mux);
-            ep = s_http_epoch;
-            has_tz = s_http_has_tz;
-            tz_hr = s_http_tz_hours;
-            s_http_pending = false;
-            portEXIT_CRITICAL(&s_sync_mux);
+        bool http_pending, wifi_cfg_pending, has_tz;
+        int64_t epoch;
+        int tz_hr;
+        portENTER_CRITICAL(&s_sync_mux);
+        http_pending = s_http_pending;
+        epoch = s_http_epoch;
+        has_tz = s_http_has_tz;
+        tz_hr = s_http_tz_hours;
+        s_http_pending = false;
+        wifi_cfg_pending = s_wifi_cfg_pending;
+        if (wifi_cfg_pending) {
+            std::memcpy(g_settings.wifi_ssid, s_pending_ssid, sizeof(g_settings.wifi_ssid));
+            std::memcpy(g_settings.wifi_pass, s_pending_pass, sizeof(g_settings.wifi_pass));
+            s_wifi_cfg_pending = false;
+        }
+        portEXIT_CRITICAL(&s_sync_mux);
 
+        if (http_pending) {
             if (has_tz) {
                 g_settings.tz_offset_hours = tz_hr;
                 app_settings_save();
                 time_sync_apply_tz();
             }
-            write_rtc_from_time_t((time_t)ep);
+            write_rtc_from_time_t((time_t)epoch);
             sound_fx_confirm();
             banner_msg = "AP TIME SYNCED!";
             banner_col = 0x69F0AE;
             last_draw_ms = 0;
         }
-
-        if (s_wifi_cfg_pending) {
-            portENTER_CRITICAL(&s_sync_mux);
-            std::memcpy(g_settings.wifi_ssid, s_pending_ssid, sizeof(g_settings.wifi_ssid));
-            std::memcpy(g_settings.wifi_pass, s_pending_pass, sizeof(g_settings.wifi_pass));
-            s_wifi_cfg_pending = false;
-            portEXIT_CRITICAL(&s_sync_mux);
+        if (wifi_cfg_pending) {
             app_settings_save();
             sound_fx_confirm();
             banner_msg = "Wi-Fi Saved!";
@@ -462,33 +593,85 @@ void time_sync_ui_run() {
             last_draw_ms = 0;
         }
 
-        // Check pending BLE CTS / GATT write
-        if (s_ble_pending) {
-            uint8_t buf[32]{};
-            uint16_t len = 0;
-            portENTER_CRITICAL(&s_sync_mux);
-            len = s_ble_len;
-            std::memcpy(buf, s_ble_buf, len);
-            s_ble_pending = false;
-            portEXIT_CRITICAL(&s_sync_mux);
+        const WifiSync wifi = s_wifi_sync.load();
+        if (manual_sntp && wifi != WifiSync::Running) {
+            manual_sntp = false;
+            const bool synced = wifi == WifiSync::Synced || wifi == WifiSync::Idle;
+            if (synced) sound_fx_confirm();
+            banner_msg = synced ? "NTP SYNCED!" : "NTP sync failed";
+            banner_col = synced ? 0x69F0AE : 0xFF8A80;
+            last_draw_ms = 0;
+        }
 
-            ParsedTimePayload p = parse_ble_time_payload(buf, len);
-            if (p.kind == TimePayloadKind::LocalFields) {
-                write_rtc_from_local_fields(p.year, p.month, p.day, p.hour, p.min, p.sec);
-                sound_fx_confirm();
-                banner_msg = "BLE TIME SYNCED!";
-                banner_col = 0x69F0AE;
-            } else if (p.kind == TimePayloadKind::UnixEpochUtc) {
-                write_rtc_from_time_t((time_t)p.epoch_sec);
-                sound_fx_confirm();
-                banner_msg = "BLE TIME SYNCED!";
-                banner_col = 0x69F0AE;
+        if (ap_deadline_ms != 0 && now_ms >= ap_deadline_ms) {
+            stop_active_transports();
+            ap_deadline_ms = 0;
+            banner_msg = "AP window ended";
+            banner_col = 0xFFD54F;
+            last_draw_ms = 0;
+        }
+
+        if (manual_ble_requested && wifi != WifiSync::Running) {
+            manual_ble_requested = false;
+            stop_active_transports();
+            last_ble_status = BleStatus::Idle;
+            ble_shutdown_ms = 0;
+            if (airmouse_ble_start_time_sync(on_ble_time_write_cb)) {
+                s_ble_sync_started = true;
+                ble_start_deadline_ms = input_now_ms() + kBleStartTimeoutMs;
+                ble_deadline_ms = input_now_ms() + kManualSyncWindowMs;
             } else {
-                sound_fx_click();
-                banner_msg = "Invalid BLE data";
+                banner_msg = "BLE init failed";
                 banner_col = 0xFF8A80;
             }
             last_draw_ms = 0;
+        }
+
+        const BleSyncResult ble = apply_pending_ble_time();
+        if (ble == BleSyncResult::Synced) {
+            if (!g_settings.boot_ble_time_sync) {
+                g_settings.boot_ble_time_sync = true;
+                app_settings_save();
+            }
+            sound_fx_confirm();
+            banner_msg = "BLE TIME SYNCED!";
+            banner_col = 0x69F0AE;
+            // Leave time for the write response and bond storage before shutting the stack down.
+            ble_shutdown_ms = now_ms + 2000;
+            last_draw_ms = 0;
+        } else if (ble == BleSyncResult::Invalid) {
+            sound_fx_click();
+            banner_msg = "Invalid BLE data";
+            banner_col = 0xFF8A80;
+            last_draw_ms = 0;
+        }
+
+        if (s_ble_sync_started) {
+            const BleStatus status = airmouse_ble_status();
+            if (status == BleStatus::Failed ||
+                (ble_start_deadline_ms != 0 && now_ms >= ble_start_deadline_ms &&
+                 status == BleStatus::Starting)) {
+                stop_active_transports();
+                banner_msg = "BLE start failed";
+                banner_col = 0xFF8A80;
+                last_draw_ms = 0;
+            } else if (ble_shutdown_ms != 0) {
+                if (now_ms >= ble_shutdown_ms) stop_active_transports();
+            } else if (now_ms >= ble_deadline_ms) {
+                stop_active_transports();
+                banner_msg = "BLE window ended";
+                banner_col = 0xFFD54F;
+                last_draw_ms = 0;
+            } else if (status != last_ble_status) {
+                last_ble_status = status;
+                if (status == BleStatus::Advertising || status == BleStatus::Connected) {
+                    ble_start_deadline_ms = 0;
+                }
+                banner_msg = status == BleStatus::Connected ? "BLE CONNECTED" :
+                             status == BleStatus::Advertising ? "BLE READY" : "Starting BLE...";
+                banner_col = 0x80D8FF;
+                last_draw_ms = 0;
+            }
         }
 
         if (input_ab_held(500)) {
@@ -501,6 +684,9 @@ void time_sync_ui_run() {
 
         if (input_a_pressed()) {
             sel = (sel + 1) % 3;
+            manual_sntp = false;
+            manual_ble_requested = false;
+            ap_deadline_ms = 0;
             stop_active_transports();
             banner_msg = "Press B to start";
             banner_col = 0xB0BEC5;
@@ -510,8 +696,16 @@ void time_sync_ui_run() {
 
         if (input_b_pressed()) {
             sound_fx_confirm();
-            if (sel == 0) {
+            if (sel == 2) {
+                manual_ble_requested = true;
+                banner_msg = wifi == WifiSync::Running ? "BLE after Wi-Fi" : "Starting BLE...";
+                banner_col = 0x80D8FF;
+            } else if (s_wifi_sync.load() == WifiSync::Running) {
+                banner_msg = "Wi-Fi syncing...";
+                banner_col = 0x80D8FF;
+            } else if (sel == 0) {
                 if (start_ap_portal()) {
+                    ap_deadline_ms = input_now_ms() + kManualSyncWindowMs;
                     banner_msg = "AP ACTIVE";
                     banner_col = 0x80D8FF;
                 } else {
@@ -522,29 +716,18 @@ void time_sync_ui_run() {
                 if (g_settings.wifi_ssid[0] == '\0') {
                     banner_msg = "Set Wi-Fi in AP";
                     banner_col = 0xFFD54F;
-                } else if (run_sta_sntp(g_settings.wifi_ssid, g_settings.wifi_pass, canvas)) {
-                    sound_fx_confirm();
-                    banner_msg = "NTP SYNCED!";
-                    banner_col = 0x69F0AE;
                 } else {
-                    banner_msg = "NTP sync failed";
-                    banner_col = 0xFF8A80;
-                }
-            } else if (sel == 2) {
-                stop_active_transports();
-                if (airmouse_ble_start_time_sync(on_ble_time_write_cb)) {
-                    s_ble_sync_started = true;
-                    banner_msg = "BLE ADVERTISING";
-                    banner_col = 0x80D8FF;
-                } else {
-                    banner_msg = "BLE init failed";
-                    banner_col = 0xFF8A80;
+                    stop_active_transports();
+                    const bool started = start_sta_sntp(false);
+                    manual_sntp = started;
+                    banner_msg = started ? "Wi-Fi syncing..." : "NTP sync failed";
+                    banner_col = started ? 0x80D8FF : 0xFF8A80;
                 }
             }
             last_draw_ms = 0;
         }
 
-        if ((now_ms - last_draw_ms) >= 200) {
+        if (ui_screen_is_on() && (now_ms - last_draw_ms) >= 200) {
             last_draw_ms = now_ms;
             int w = canvas.width();
             canvas.fillScreen(0x0B0F17);
@@ -554,7 +737,7 @@ void time_sync_ui_run() {
             time_t now = std::time(nullptr);
             struct tm tm_now{};
             localtime_r(&now, &tm_now);
-            bool synced = (now >= 1700000000LL);
+            bool synced = time_sync_is_valid();
 
             canvas.drawRoundRect(4, 24, w - 8, 52, 5, 0x263547);
             canvas.fillRoundRect(5, 25, w - 10, 50, 4, 0x101824);
@@ -579,11 +762,11 @@ void time_sync_ui_run() {
 
             canvas.setTextColor(0xFFFFFF, 0x101824);
             canvas.setCursor(9, 41);
-            canvas.print(dbuf);
+            canvas.print(synced ? dbuf : "----/--/--");
 
             canvas.setTextColor(synced ? 0x69F0AE : 0xCFD8DC, 0x101824);
             canvas.setCursor(9, 57);
-            canvas.print(tbuf);
+            canvas.print(synced ? tbuf : "--:--:--");
 
             // 3 Methods list
             int y = 80;
@@ -628,13 +811,13 @@ void time_sync_ui_run() {
                 canvas.setCursor(9, 171);
                 canvas.print("DEV: StickS3-Time");
                 canvas.setCursor(9, 187);
-                canvas.print("CTS: 0x1805/0x2A2B");
+                canvas.print("Pair via Bluetooth");
             }
 
             ui_draw_footer2(canvas, "A: Select  B: Start", "Hold A+B : Go Back");
-            canvas.pushSprite(0, 0);
+            ui_present(canvas);
         }
 
-        vTaskDelay(pdMS_TO_TICKS(25));
+        input_idle_delay(25);
     }
 }

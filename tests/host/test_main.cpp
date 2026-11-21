@@ -1,6 +1,7 @@
 #include "timer/ems_timer_core.h"
 #include "timer/simple_timer_core.h"
 #include "airmouse/airmouse_math.h"
+#include "air_harp/air_harp_core.h"
 #include "time_sync_parse.h"
 
 #include <cassert>
@@ -277,6 +278,57 @@ static void test_airmouse_button_guard() {
     assert(s.exit_requested);
 }
 
+static void test_air_harp_snap_controls() {
+    AirHarpCore harp;
+    assert(!harp.set_neutral(0.0f, 0.0f, 0.2f));
+    assert(harp.set_neutral(0.0f, 0.0f, 1.0f));
+    const AirHarpVoice initial = harp.voice();
+
+    auto settle = [&](int64_t at) {
+        assert(!harp.sample(at, 0, 0, 0, false));
+        assert(!harp.sample(at + 70, 0, 0, 0, false));
+    };
+
+    assert(!harp.sample(0, 0, 0, -190, false));
+    settle(10);
+    assert(!harp.sample(90, 0, 0, -90, false)); // ordinary motion
+    assert(harp.sample(100, 0, 0, -190, false)); // right
+    assert(harp.voice().note == initial.note + 1 && harp.voice().duty == initial.duty);
+    assert(!harp.sample(110, 0, 0, 190, false)); // rebound
+    settle(120); // too early even after a quiet period
+    assert(!harp.sample(195, 0, 0, 190, false));
+
+    settle(310);
+    assert(harp.sample(385, 0, 0, 190, false)); // left
+    assert(harp.voice().note == initial.note);
+
+    settle(590);
+    assert(harp.sample(665, 170, 0, 0, false)); // up
+    assert(harp.voice().note == initial.note && harp.voice().duty == initial.duty + 1);
+
+    settle(870);
+    assert(!harp.sample(945, -170, 0, -170, false)); // ambiguous diagonal
+    assert(!harp.sample(950, -180, 0, 0, false)); // diagonal rebound
+    assert(harp.voice().duty == initial.duty + 1);
+
+    settle(1150);
+    assert(harp.sample(1225, -180, 0, 0, false)); // down
+    assert(harp.voice().duty == initial.duty);
+
+    settle(1430);
+    assert(harp.sample(1505, -180, 0, 0, true)); // up with flipped screen
+    assert(harp.voice().duty == initial.duty + 1);
+
+    for (int i = 0; i < kAirHarpNoteCount; ++i) {
+        const int64_t at = 1800 + i * 300;
+        settle(at);
+        assert(harp.sample(at + 75, 0, 0, -190, false));
+    }
+    assert(harp.voice().note == kAirHarpNoteCount - 1);
+    harp.reset_motion();
+    assert(!harp.sample(5000, 0, 0, 190, false)); // wake or recenter starts disarmed
+}
+
 static void test_time_sync_parsing() {
     // 1. 10-byte CTS payload: 2026-04-06 14:41:12 (2026 = 0x07EA)
     const uint8_t cts[10] = {0xEA, 0x07, 4, 6, 14, 41, 12, 1, 0, 0};
@@ -334,6 +386,7 @@ int main() {
     test_gyro_leftward_drift_suppression_and_relative_pose();
     test_gyro_flip_180();
     test_airmouse_button_guard();
+    test_air_harp_snap_controls();
     test_time_sync_parsing();
     std::printf("ALL HOST TESTS PASSED\n");
     return 0;

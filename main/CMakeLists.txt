@@ -2,8 +2,10 @@ idf_component_register(
     SRCS
         "app_main.cpp"
         "app_settings.cpp"
+        "settings_ui.cpp"
         "sound_fx.cpp"
         "input_util.cpp"
+        "power_save.cpp"
         "ui_common.cpp"
         "imu_cal.cpp"
         "time_sync.cpp"
@@ -16,6 +18,8 @@ idf_component_register(
         "airmouse/airmouse_ble.cpp"
         "airmouse/airmouse_usb.cpp"
         "airmouse/airmouse_ui.cpp"
+        "air_harp/air_harp_core.cpp"
+        "air_harp/air_harp_ui.cpp"
         "ble_hid/hid_dev.c"
         "ble_hid/hid_device_le_prf.c"
         "ble_hid/esp_hidd_prf_api.c"
@@ -33,6 +37,7 @@ idf_component_register(
         esp_http_server
         esp_timer
         esp_psram
+        esp_pm
         driver
         lwip
 )

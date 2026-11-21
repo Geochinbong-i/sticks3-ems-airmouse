@@ -3,6 +3,7 @@
 #include <cstdint>
 
 void input_update();
+void input_idle_delay(uint32_t screen_on_ms);
 int64_t input_now_ms();
 
 bool input_a_pressed();

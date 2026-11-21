@@ -192,16 +192,6 @@ enum
 
 #define HI_UINT16(a) (((a) >> 8) & 0xFF)
 #define LO_UINT16(a) ((a) & 0xFF)
-#define PROFILE_NUM            1
-#define PROFILE_APP_IDX        0
-
-struct gatts_profile_inst {
-    esp_gatts_cb_t gatts_cb;
-    uint16_t gatts_if;
-    uint16_t app_id;
-    uint16_t conn_id;
-};
-
 hidd_le_env_t hidd_le_env;
 
 // HID report map length
@@ -329,6 +319,9 @@ static const uint16_t cts_svc_uuid = 0x1805;       // Current Time Service
 static const uint16_t cts_curr_time_uuid = 0x2A2B; // Current Time Characteristic
 static uint8_t s_cts_time_val[32] = {0};
 static uint16_t s_cts_time_hdl = 0;
+static uint16_t s_cts_svc_hdl = 0;
+static bool s_hid_started = false;
+static bool s_cts_started = false;
 static esp_hidd_time_write_cb_t s_time_write_cb = NULL;
 
 static const esp_gatts_attr_db_t cts_att_db[CTS_IDX_NB] =
@@ -338,7 +331,7 @@ static const esp_gatts_attr_db_t cts_att_db[CTS_IDX_NB] =
     [CTS_IDX_TIME_CHAR] = {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_declaration_uuid, ESP_GATT_PERM_READ,
                                                  CHAR_DECLARATION_SIZE, CHAR_DECLARATION_SIZE, (uint8_t *)&char_prop_read_write}},
     [CTS_IDX_TIME_VAL] = {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&cts_curr_time_uuid,
-                                                ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
+                                                ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE_ENCRYPTED,
                                                 sizeof(s_cts_time_val), 10, s_cts_time_val}},
 };
 
@@ -564,29 +557,28 @@ static esp_gatts_attr_db_t hidd_le_gatt_db[HIDD_LE_IDX_NB] =
 
 static void hid_add_id_tbl(void);
 
+static void report_services_ready(bool success)
+{
+    if (hidd_le_env.hidd_cb != NULL) {
+        esp_hidd_cb_param_t param = {0};
+        param.init_finish.state = success ? ESP_HIDD_INIT_OK : ESP_HIDD_INIT_FAILED;
+        (hidd_le_env.hidd_cb)(ESP_HIDD_EVENT_SERVICES_READY, &param);
+    }
+}
+
 void esp_hidd_prf_cb_hdl(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if,
 									esp_ble_gatts_cb_param_t *param)
 {
     switch(event) {
         case ESP_GATTS_REG_EVT: {
-            esp_ble_gap_config_local_icon (ESP_BLE_APPEARANCE_GENERIC_HID);
-            esp_hidd_cb_param_t hidd_param;
-            hidd_param.init_finish.state = param->reg.status;
-            if(param->reg.app_id == HIDD_APP_ID) {
-                hidd_le_env.gatt_if = gatts_if;
-                if(hidd_le_env.hidd_cb != NULL) {
-                    (hidd_le_env.hidd_cb)(ESP_HIDD_EVENT_REG_FINISH, &hidd_param);
-                    hidd_le_create_service(hidd_le_env.gatt_if);
+            if (param->reg.app_id == HIDD_APP_ID) {
+                if (param->reg.status == ESP_GATT_OK) {
+                    hidd_le_env.gatt_if = gatts_if;
+                    hidd_le_create_service(gatts_if);
+                } else {
+                    report_services_ready(false);
                 }
             }
-            if(param->reg.app_id == BATTRAY_APP_ID) {
-                hidd_param.init_finish.gatts_if = gatts_if;
-                 if(hidd_le_env.hidd_cb != NULL) {
-                    (hidd_le_env.hidd_cb)(ESP_BAT_EVENT_REG, &hidd_param);
-                }
-
-            }
-
             break;
         }
         case ESP_GATTS_CONF_EVT: {
@@ -600,7 +592,6 @@ void esp_hidd_prf_cb_hdl(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if,
 			memcpy(cb_param.connect.remote_bda, param->connect.remote_bda, sizeof(esp_bd_addr_t));
             cb_param.connect.conn_id = param->connect.conn_id;
             hidd_clcb_alloc(param->connect.conn_id, param->connect.remote_bda);
-            esp_ble_set_encryption(param->connect.remote_bda, ESP_BLE_SEC_ENCRYPT_NO_MITM);
             if(hidd_le_env.hidd_cb != NULL) {
                 (hidd_le_env.hidd_cb)(ESP_HIDD_EVENT_BLE_CONNECT, &cb_param);
             }
@@ -618,7 +609,8 @@ void esp_hidd_prf_cb_hdl(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if,
         case ESP_GATTS_WRITE_EVT: {
             esp_hidd_cb_param_t cb_param = {0};
             if (s_cts_time_hdl != 0 && param->write.handle == s_cts_time_hdl) {
-                if (s_time_write_cb != NULL && param->write.len > 0) {
+                if (s_time_write_cb != NULL && !param->write.is_prep &&
+                    param->write.offset == 0 && param->write.len > 0) {
                     s_time_write_cb(param->write.value, param->write.len);
                 }
             }
@@ -642,33 +634,52 @@ void esp_hidd_prf_cb_hdl(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if,
             break;
         }
         case ESP_GATTS_CREAT_ATTR_TAB_EVT: {
-            if (param->add_attr_tab.num_handle == BAS_IDX_NB &&
-                param->add_attr_tab.svc_uuid.uuid.uuid16 == ESP_GATT_UUID_BATTERY_SERVICE_SVC &&
-                param->add_attr_tab.status == ESP_GATT_OK) {
+            if (param->add_attr_tab.status != ESP_GATT_OK) {
+                report_services_ready(false);
+                break;
+            }
+            const uint16_t service_uuid = param->add_attr_tab.svc_uuid.uuid.uuid16;
+            if (service_uuid == ESP_GATT_UUID_BATTERY_SERVICE_SVC &&
+                param->add_attr_tab.num_handle == BAS_IDX_NB) {
                 incl_svc.start_hdl = param->add_attr_tab.handles[BAS_IDX_SVC];
-                incl_svc.end_hdl = incl_svc.start_hdl + BAS_IDX_NB -1;
+                incl_svc.end_hdl = incl_svc.start_hdl + BAS_IDX_NB - 1;
                 s_bas_lvl_hdl = param->add_attr_tab.handles[BAS_IDX_BATT_LVL_VAL];
-                ESP_LOGI(HID_LE_PRF_TAG, "%s(), start added the hid service to the stack database. incl_handle = %d",
-                           __func__, incl_svc.start_hdl);
-                esp_ble_gatts_create_attr_tab(hidd_le_gatt_db, gatts_if, HIDD_LE_IDX_NB, 0);
-            } else if (param->add_attr_tab.num_handle == HIDD_LE_IDX_NB &&
-                param->add_attr_tab.status == ESP_GATT_OK) {
+                if (esp_ble_gatts_start_service(incl_svc.start_hdl) != ESP_OK ||
+                    esp_ble_gatts_create_attr_tab(hidd_le_gatt_db, gatts_if,
+                                                  HIDD_LE_IDX_NB, 0) != ESP_OK) {
+                    report_services_ready(false);
+                }
+            } else if (service_uuid == ESP_GATT_UUID_HID_SVC &&
+                       param->add_attr_tab.num_handle == HIDD_LE_IDX_NB) {
                 memcpy(hidd_le_env.hidd_inst.att_tbl, param->add_attr_tab.handles,
-                            HIDD_LE_IDX_NB*sizeof(uint16_t));
-                ESP_LOGI(HID_LE_PRF_TAG, "hid svc handle = %x",hidd_le_env.hidd_inst.att_tbl[HIDD_LE_IDX_SVC]);
+                       HIDD_LE_IDX_NB * sizeof(uint16_t));
                 hid_add_id_tbl();
-                esp_ble_gatts_start_service(hidd_le_env.hidd_inst.att_tbl[HIDD_LE_IDX_SVC]);
-                esp_ble_gatts_create_attr_tab(cts_att_db, gatts_if, CTS_IDX_NB, 0);
-            } else if (param->add_attr_tab.num_handle == CTS_IDX_NB &&
-                param->add_attr_tab.svc_uuid.uuid.uuid16 == 0x1805 &&
-                param->add_attr_tab.status == ESP_GATT_OK) {
+                if (esp_ble_gatts_start_service(hidd_le_env.hidd_inst.att_tbl[HIDD_LE_IDX_SVC]) != ESP_OK ||
+                    esp_ble_gatts_create_attr_tab(cts_att_db, gatts_if, CTS_IDX_NB, 0) != ESP_OK) {
+                    report_services_ready(false);
+                }
+            } else if (service_uuid == cts_svc_uuid && param->add_attr_tab.num_handle == CTS_IDX_NB) {
                 s_cts_time_hdl = param->add_attr_tab.handles[CTS_IDX_TIME_VAL];
-                esp_ble_gatts_start_service(param->add_attr_tab.handles[CTS_IDX_SVC]);
-            } else if (param->add_attr_tab.status == ESP_GATT_OK) {
-                esp_ble_gatts_start_service(param->add_attr_tab.handles[0]);
+                s_cts_svc_hdl = param->add_attr_tab.handles[CTS_IDX_SVC];
+                if (esp_ble_gatts_start_service(s_cts_svc_hdl) != ESP_OK) report_services_ready(false);
+            } else {
+                report_services_ready(false);
             }
             break;
-         }
+        }
+        case ESP_GATTS_START_EVT: {
+            if (param->start.status != ESP_GATT_OK) {
+                report_services_ready(false);
+                break;
+            }
+            if (param->start.service_handle == hidd_le_env.hidd_inst.att_tbl[HIDD_LE_IDX_SVC]) {
+                s_hid_started = true;
+            } else if (param->start.service_handle == s_cts_svc_hdl) {
+                s_cts_started = true;
+            }
+            if (s_hid_started && s_cts_started) report_services_ready(true);
+            break;
+        }
 
         default:
             break;
@@ -679,7 +690,9 @@ void hidd_le_create_service(esp_gatt_if_t gatts_if)
 {
     /* Here should added the battery service first, because the hid service should include the battery service.
        After finish to added the battery service then can added the hid service. */
-    esp_ble_gatts_create_attr_tab(bas_att_db, gatts_if, BAS_IDX_NB, 0);
+    if (esp_ble_gatts_create_attr_tab(bas_att_db, gatts_if, BAS_IDX_NB, 0) != ESP_OK) {
+        report_services_ready(false);
+    }
 
 }
 
@@ -688,6 +701,12 @@ void hidd_le_init(void)
 
     // Reset the hid device target environment
     memset(&hidd_le_env, 0, sizeof(hidd_le_env_t));
+    hidd_le_env.gatt_if = ESP_GATT_IF_NONE;
+    s_bas_lvl_hdl = 0;
+    s_cts_time_hdl = 0;
+    s_cts_svc_hdl = 0;
+    s_hid_started = false;
+    s_cts_started = false;
 }
 
 void hidd_clcb_alloc (uint16_t conn_id, esp_bd_addr_t bda)
@@ -713,49 +732,23 @@ bool hidd_clcb_dealloc (uint16_t conn_id)
     hidd_clcb_t      *p_clcb = NULL;
 
     for (i_clcb = 0, p_clcb= hidd_le_env.hidd_clcb; i_clcb < HID_MAX_APPS; i_clcb++, p_clcb++) {
+        if (p_clcb->in_use && p_clcb->conn_id == conn_id) {
             memset(p_clcb, 0, sizeof(hidd_clcb_t));
             return true;
+        }
     }
 
     return false;
 }
 
-static struct gatts_profile_inst heart_rate_profile_tab[PROFILE_NUM] = {
-    [PROFILE_APP_IDX] = {
-        .gatts_cb = esp_hidd_prf_cb_hdl,
-        .gatts_if = ESP_GATT_IF_NONE,       /* Not get the gatt_if, so initial is ESP_GATT_IF_NONE */
-    },
-
-};
-
 static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if,
                                 esp_ble_gatts_cb_param_t *param)
 {
-    /* If event is register event, store the gatts_if for each profile */
-    if (event == ESP_GATTS_REG_EVT) {
-        if (param->reg.status == ESP_GATT_OK) {
-            heart_rate_profile_tab[PROFILE_APP_IDX].gatts_if = gatts_if;
-        } else {
-            ESP_LOGI(HID_LE_PRF_TAG, "Reg app failed, app_id %04x, status %d",
-                    param->reg.app_id,
-                    param->reg.status);
-            return;
-        }
+    if (event == ESP_GATTS_REG_EVT || gatts_if == ESP_GATT_IF_NONE ||
+        gatts_if == hidd_le_env.gatt_if) {
+        esp_hidd_prf_cb_hdl(event, gatts_if, param);
     }
-
-    do {
-        int idx;
-        for (idx = 0; idx < PROFILE_NUM; idx++) {
-            if (gatts_if == ESP_GATT_IF_NONE || /* ESP_GATT_IF_NONE, not specify a certain gatt_if, need to call every profile cb function */
-                    gatts_if == heart_rate_profile_tab[idx].gatts_if) {
-                if (heart_rate_profile_tab[idx].gatts_cb) {
-                    heart_rate_profile_tab[idx].gatts_cb(event, gatts_if, param);
-                }
-            }
-        }
-    } while (0);
 }
-
 
 esp_err_t hidd_register_cb(void)
 {
@@ -861,7 +854,7 @@ void hidd_set_battery_level(uint16_t conn_id, bool notify, uint8_t level)
     battary_lev = level;
     if (s_bas_lvl_hdl != 0) {
         esp_ble_gatts_set_attr_value(s_bas_lvl_hdl, sizeof(uint8_t), &battary_lev);
-        if (notify && hidd_le_env.gatt_if != 0) {
+        if (notify && hidd_le_env.gatt_if != ESP_GATT_IF_NONE) {
             esp_ble_gatts_send_indicate(hidd_le_env.gatt_if, conn_id, s_bas_lvl_hdl,
                                         sizeof(uint8_t), &battary_lev, false);
         }

@@ -5,6 +5,7 @@
 #include "ui_common.h"
 
 #include "M5Unified.h"
+#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -13,6 +14,27 @@
 #include <cstdio>
 
 namespace {
+
+// BMI270 power controls. Keep the uploaded configuration while the sensors stop.
+constexpr uint8_t kBmiChipId = 0x24;
+constexpr uint8_t kBmiPowerConf = 0x7C;
+constexpr uint8_t kBmiPowerCtrl = 0x7D;
+constexpr uint32_t kBmiClock = 400000;
+uint8_t s_bmi_address = 0;
+bool s_bmi_idle = false;
+
+void find_internal_bmi270() {
+    if (M5.getBoard() != m5::board_t::board_M5StickS3 ||
+        M5.Imu.getType() != m5::imu_bmi270) return;
+    for (const uint8_t address : {0x69, 0x68}) {
+        uint8_t id = 0;
+        if (M5.In_I2C.readRegister(address, 0x00, &id, 1, kBmiClock) && id == kBmiChipId) {
+            s_bmi_address = address;
+            return;
+        }
+    }
+}
+
 
 enum class CalViewState {
     Ready,
@@ -107,7 +129,7 @@ void draw_abs_cal_idle(M5Canvas &canvas, CalViewState vst, float last_spread) {
     canvas.setTextDatum(TL_DATUM);
 
     ui_draw_footer2(canvas, "A: Clear   B: Start", "Hold A+B : Go Back");
-    canvas.pushSprite(0, 0);
+    ui_present(canvas);
 }
 
 void draw_sampling_progress(M5Canvas &canvas, int done, int total) {
@@ -145,10 +167,37 @@ void draw_sampling_progress(M5Canvas &canvas, int done, int total) {
     canvas.print(pbuf);
 
     ui_draw_footer2(canvas, "Sampling steady...", "Please wait 1.5s");
-    canvas.pushSprite(0, 0);
+    ui_present(canvas);
 }
 
 } // namespace
+
+bool imu_set_active() {
+    if (!M5.Imu.isEnabled()) return false;
+    if (!s_bmi_idle) return true;
+
+    if (!M5.In_I2C.writeRegister8(s_bmi_address, kBmiPowerConf, 0x00, kBmiClock)) return false;
+    // Leave advanced power save before enabling the sensors.
+    vTaskDelay(pdMS_TO_TICKS(1) + 1);
+    if (!M5.In_I2C.writeRegister8(s_bmi_address, kBmiPowerCtrl, 0x0E, kBmiClock)) return false;
+    s_bmi_idle = false;
+    vTaskDelay(pdMS_TO_TICKS(80));
+    return true;
+}
+
+void imu_set_idle() {
+    if (s_bmi_address == 0) find_internal_bmi270();
+    if (s_bmi_address == 0 || s_bmi_idle) return;
+
+    if (!M5.In_I2C.writeRegister8(s_bmi_address, kBmiPowerCtrl, 0x00, kBmiClock)) {
+        ESP_LOGW("imu", "Could not stop BMI270 sensors");
+        return;
+    }
+    s_bmi_idle = true;
+    if (!M5.In_I2C.writeRegister8(s_bmi_address, kBmiPowerConf, 0x01, kBmiClock)) {
+        ESP_LOGW("imu", "Could not enable BMI270 advanced power save");
+    }
+}
 
 void imu_abs_cal_ui_run() {
     M5Canvas canvas(&M5.Display);
@@ -184,7 +233,7 @@ void imu_abs_cal_ui_run() {
             sound_fx_click();
             input_wait_all_release();
 
-            if (!M5.Imu.isEnabled()) {
+            if (!imu_set_active()) {
                 vst = CalViewState::FailedMove;
                 last_spread = 99.9f;
             } else {
@@ -219,6 +268,7 @@ void imu_abs_cal_ui_run() {
                     vTaskDelay(pdMS_TO_TICKS(10));
                 }
 
+                imu_set_idle();
                 float spread = std::max({max_gx - min_gx, max_gy - min_gy, max_gz - min_gz});
                 last_spread = spread;
                 if (valid >= 100 && spread < 4.5f) {
@@ -239,7 +289,7 @@ void imu_abs_cal_ui_run() {
             }
         }
 
-        draw_abs_cal_idle(canvas, vst, last_spread);
-        vTaskDelay(pdMS_TO_TICKS(30));
+        if (ui_screen_is_on()) draw_abs_cal_idle(canvas, vst, last_spread);
+        input_idle_delay(30);
     }
 }
