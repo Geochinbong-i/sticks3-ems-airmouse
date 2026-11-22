@@ -20,7 +20,7 @@ static void test_ems_timer_stopwatch_and_pause() {
     t.start(1000);
     assert(t.state() == EmsState::Running);
     assert(t.event_count() == 1);
-    assert(std::strcmp(t.event_at(0)->label, "CASE START") == 0);
+    assert(std::strcmp(t.event_at(0)->label, "START") == 0);
     assert(t.case_start_utc_ms() == 0);
 
     assert(t.total_elapsed_ms(61500) == 60500);
@@ -28,9 +28,9 @@ static void test_ems_timer_stopwatch_and_pause() {
     t.pause(61500);
     assert(t.state() == EmsState::Paused);
     assert(t.total_elapsed_ms(120000) == 60500);
-    assert(t.event_at(0)->type == EmsEventType::TimerPause && t.event_at(0)->elapsed_ms == 60500);
-    t.log_event(EmsEventType::RhythmPvt, 63000);
-    assert(std::strcmp(t.event_at(0)->label, "RHYTHM pVT") == 0 && t.event_at(0)->elapsed_ms == 62000);
+    assert(t.event_at(0)->type == EmsEventType::Pause && t.event_at(0)->elapsed_ms == 60500);
+    t.log_event(EmsEventType::Iv, 63000);
+    assert(std::strcmp(t.event_at(0)->label, "IV") == 0 && t.event_at(0)->elapsed_ms == 62000);
     t.sync_clock(64050, 1760000063050LL);
     assert(t.case_start_utc_ms() == 1760000000000LL);
     assert(t.case_start_utc_ms() + t.event_at(0)->elapsed_ms == 1760000062000LL);
@@ -38,7 +38,7 @@ static void test_ems_timer_stopwatch_and_pause() {
     t.resume(120000);
     assert(t.state() == EmsState::Running);
     assert(t.total_elapsed_ms(130000) == 70500);
-    assert(t.event_at(0)->type == EmsEventType::TimerResume && t.event_at(0)->elapsed_ms == 119000);
+    assert(t.event_at(0)->type == EmsEventType::Resume && t.event_at(0)->elapsed_ms == 119000);
     t.reset();
     assert(t.event_count() == 0 && t.case_start_utc_ms() == 0);
     t.start(150000, 1760000150000LL);
@@ -363,6 +363,33 @@ static void test_air_harp_continuous_controls() {
     }
 }
 
+static void test_harp_range_and_arpeggio() {
+    const auto range = air_harp_range(AirHarpRange::Oct4);
+    assert(range.first == 24 && range.count == 12);
+    assert(std::strcmp(range.notes, "C4-B4") == 0);
+
+    AirHarpCore standard(AirHarpRange::Oct4, 45);
+    AirHarpCore wide(AirHarpRange::Oct4, 75);
+    assert(standard.set_neutral(0, 0, 1, 0));
+    assert(wide.set_neutral(0, 0, 1, 0));
+    assert(standard.voice().note == 30 && standard.key() == 0);
+    assert(standard.scale() == AirHarpScale::Major);
+    for (int t = 10; t <= 1000; t += 10) {
+        standard.sample_gyro(0, 0, -40, false, t);
+        wide.sample_gyro(0, 0, -40, false, t);
+    }
+    assert(standard.voice().note > wide.voice().note);
+    assert(wide.voice().note >= range.first && standard.voice().note < range.first + range.count);
+
+    AirHarpArpeggio arp;
+    assert(arp.play(1200, 0, AirHarpScale::Major, range) == 24);
+    assert(arp.play(1449, 1, AirHarpScale::Minor, range) == 24);
+    assert(arp.play(1450, 1, AirHarpScale::Minor, range) == 28);
+    assert(arp.play(1700, 10, AirHarpScale::Major, range) == 29);
+    arp.stop();
+    assert(arp.play(4000, 11, AirHarpScale::Pentatonic, range) == 35);
+}
+
 static void test_ems_simultaneous_alarms() {
     EmsTimerCore timer;
     timer.set_epi_interval_sec(180);
@@ -479,6 +506,25 @@ static void test_ir_signal_learning() {
     assert(ir_finish_signal(frame));
     assert(frame.count == 67 && frame.duration_us[0] == 9000 && ir_is_nec(frame));
     assert(ir_supports_high_power(frame));
+    IrProfile profile;
+    IrSignal tx;
+    profile.nec = true;
+    frame.duration_us[2] = 590;
+    assert(ir_build_tx(frame, profile, tx) && tx.duration_us[2] == 560);
+    profile.playback = IrPlayback::Repeat;
+    profile.repeat_gap_ms = 120;
+    assert(ir_build_tx(frame, profile, tx));
+    assert(ir_frame_count(tx) == 2 && tx.duration_us[67] == 120000);
+    assert(!ir_supports_high_power(tx));
+
+    const IrSignal captured = tx;
+    profile.nec = false;
+    profile.playback = IrPlayback::Once;
+    assert(ir_build_tx(captured, profile, tx) && tx.count == 67);
+    profile.playback = IrPlayback::Captured;
+    assert(ir_build_tx(captured, profile, tx) && tx.count == captured.count);
+    assert(tx.duration_us[67] == captured.duration_us[67]);
+
     IrSignal long_burst = frame;
     long_burst.duration_us[0] = 11000;
     assert(ir_valid_signal(long_burst) && !ir_supports_high_power(long_burst));
@@ -513,6 +559,7 @@ int main() {
     test_gyro_flip_180();
     test_airmouse_button_guard();
     test_air_harp_continuous_controls();
+    test_harp_range_and_arpeggio();
     test_menu_scroll_and_chords();
     test_ir_signal_learning();
     test_time_sync_parsing();

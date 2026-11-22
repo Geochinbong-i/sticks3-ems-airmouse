@@ -3,6 +3,8 @@ idf_component_register(
         "app_main.cpp"
         "app_settings.cpp"
         "settings_ui.cpp"
+        "audio/voice_store.cpp"
+        "audio/voice_ui.cpp"
         "sound_fx.cpp"
         "input_util.cpp"
         "power_save.cpp"
@@ -45,6 +47,8 @@ idf_component_register(
         esp_pm
         driver
         esp_driver_rmt
+        spiffs
+        esp_partition
         lwip
 )
 

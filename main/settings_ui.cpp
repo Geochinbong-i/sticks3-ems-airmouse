@@ -1,6 +1,7 @@
 #include "settings_ui.h"
 
 #include "app_settings.h"
+#include "air_harp/air_harp_core.h"
 #include "imu_cal.h"
 #include "input_util.h"
 #include "sound_fx.h"
@@ -20,7 +21,7 @@ namespace {
 enum class Setting {
     Brightness, Theme, ScreenOff, Rotation, Sync, Timezone, TimerMode, EpiInterval,
     Sensitivity, InvertX, InvertY, Swap, NaturalScroll, ImuCal,
-    HarpGate, Volume, Mute, IrTxPower, Reboot,
+    HarpGate, HarpTurn, HarpOctaves, Volume, Mute, IrTxPower, Reboot,
 };
 
 struct Row {
@@ -39,7 +40,10 @@ constexpr Row kAirMouse[] = {
     {"Invert Y", Setting::InvertY}, {"Swap X/Y", Setting::Swap},
     {"Nat Scroll", Setting::NaturalScroll}, {"IMU Abs Cal", Setting::ImuCal},
 };
-constexpr Row kAirHarp[] = {{"Play Button", Setting::HarpGate}};
+constexpr Row kAirHarp[] = {
+    {"Turn range", Setting::HarpTurn}, {"Octaves", Setting::HarpOctaves},
+    {"Play button", Setting::HarpGate},
+};
 constexpr Row kSound[] = {{"Volume", Setting::Volume}, {"Mute", Setting::Mute}};
 constexpr Row kIr[] = {{"TX Power", Setting::IrTxPower}};
 constexpr Row kDevice[] = {{"Reboot Device", Setting::Reboot}};
@@ -91,6 +95,8 @@ const char *setting_value(Setting setting, char *buf, size_t size) {
         case Setting::InvertY: return on_off(g_settings.air_invert_y);
         case Setting::Swap: return on_off(g_settings.air_swap_xy);
         case Setting::NaturalScroll: return on_off(g_settings.air_natural_scroll);
+        case Setting::HarpTurn: std::snprintf(buf, size, "%d deg", g_settings.harp_turn_degrees); break;
+        case Setting::HarpOctaves: return air_harp_range(static_cast<AirHarpRange>(g_settings.harp_octaves)).label;
         case Setting::HarpGate: return g_settings.harp_toggle ? "TOGGLE" : "HOLD";
         case Setting::Volume: std::snprintf(buf, size, "%d%%", g_settings.sound_volume); break;
         case Setting::Mute: return on_off(g_settings.sound_muted);
@@ -99,6 +105,55 @@ const char *setting_value(Setting setting, char *buf, size_t size) {
         case Setting::Reboot: return ">";
     }
     return buf;
+}
+
+void choose_harp_octaves() {
+    M5Canvas canvas(&M5.Display);
+    if (!canvas.createSprite(M5.Display.width(), M5.Display.height())) return;
+    input_wait_all_release();
+    constexpr int count = static_cast<int>(AirHarpRange::Count);
+    const char *labels[] = {"Octave 2", "Octave 3", "Octave 4", "Oct. 2-3", "Oct. 2-4"};
+    int selected = g_settings.harp_octaves;
+    bool redraw = true;
+    for (;;) {
+        input_update();
+        if (input_ab_held(500) || (input_b_pressed() && selected == count)) break;
+        if (input_b_pressed()) {
+            g_settings.harp_octaves = selected;
+            sound_fx_confirm();
+            break;
+        }
+        if (input_a_pressed()) {
+            selected = (selected + 1) % (count + 1);
+            sound_fx_click();
+            redraw = true;
+        }
+        if (!ui_screen_is_on()) redraw = true;
+        if (redraw && ui_screen_is_on()) {
+            const auto &theme = ui_theme();
+            canvas.fillScreen(theme.background);
+            ui_draw_header(canvas, "OCTAVES", theme.surface, theme.text);
+            for (int i = 0; i <= count; ++i) {
+                const int y = 32 + i * 22;
+                const bool focused = i == selected;
+                const auto bg = focused ? theme.selected : (i % 2 ? theme.alternate : theme.surface);
+                canvas.fillRect(3, y, canvas.width() - 6, 21, bg);
+                if (focused) canvas.fillRect(3, y, 3, 21, theme.on_selected);
+                canvas.setTextColor(focused ? theme.on_selected : theme.text, bg);
+                canvas.drawString(i == count ? "< Back" : labels[i], 9, y + 3);
+                if (i < count) {
+                    const auto range = air_harp_range(static_cast<AirHarpRange>(i));
+                    canvas.setTextColor(focused ? theme.on_selected : theme.accent, bg);
+                    canvas.drawRightString(range.notes, canvas.width() - 9, y + 3);
+                }
+            }
+            ui_draw_themed_footer(canvas, "A Next   B Select", "Hold A+B Back");
+            ui_present(canvas);
+            redraw = false;
+        }
+        input_idle_delay(20);
+    }
+    input_wait_all_release();
 }
 
 void change_setting(Setting setting) {
@@ -139,6 +194,10 @@ void change_setting(Setting setting) {
         case Setting::ImuCal:
             imu_abs_cal_ui_run();
             return;
+        case Setting::HarpTurn:
+            g_settings.harp_turn_degrees = g_settings.harp_turn_degrees == 75 ? 45 : g_settings.harp_turn_degrees + 15;
+            break;
+        case Setting::HarpOctaves: choose_harp_octaves(); break;
         case Setting::HarpGate: g_settings.harp_toggle = !g_settings.harp_toggle; break;
         case Setting::Volume:
             g_settings.sound_volume += 20;
@@ -191,7 +250,7 @@ void draw_settings(M5Canvas &canvas, const Group *group, int selected) {
         canvas.fillRect(3, y, w - 6, kStep - 1, bg);
         if (focused) canvas.fillRect(3, y, 3, kStep - 1, g_settings.light_theme ? theme.on_selected : theme.accent);
         canvas.setTextColor(focused ? theme.on_selected : theme.text, bg);
-        canvas.drawString(label, 9, y + 2);
+        ui_draw_text_fit(canvas, label, 9, y + 2, w - 21 - canvas.textWidth(value));
         canvas.setTextColor(focused ? theme.on_selected : theme.accent, bg);
         canvas.drawRightString(value, w - 7, y + 2);
     }

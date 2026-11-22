@@ -10,3 +10,4 @@ struct MenuRow {
 };
 
 void ui_draw_menu(M5Canvas &canvas, const MenuRow *rows, int count, const MenuCursor &cursor);
+int ui_choose_menu(const char *title, const MenuRow *rows, int count);

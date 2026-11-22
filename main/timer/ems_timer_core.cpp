@@ -79,7 +79,7 @@ void EmsTimerCore::start(int64_t now_ms, int64_t utc_ms) {
         preset_accum_ms_ = 0;
         preset_anchor_ms_ = now_ms;
         state_ = EmsState::Running;
-        add_event(EmsEventType::CaseStart, 0, now_ms);
+        add_event(EmsEventType::Start, 0, now_ms);
     } else {
         resume(now_ms);
     }
@@ -104,7 +104,7 @@ void EmsTimerCore::pause(int64_t now_ms) {
         if (pd > 0) preset_accum_ms_ += pd;
     }
     state_ = EmsState::Paused;
-    add_event(EmsEventType::TimerPause, 0, now_ms);
+    add_event(EmsEventType::Pause, 0, now_ms);
 }
 
 void EmsTimerCore::resume(int64_t now_ms) {
@@ -113,7 +113,7 @@ void EmsTimerCore::resume(int64_t now_ms) {
     epi_anchor_ms_ = now_ms;
     preset_anchor_ms_ = now_ms;
     state_ = EmsState::Running;
-    add_event(EmsEventType::TimerResume, 0, now_ms);
+    add_event(EmsEventType::Resume, 0, now_ms);
 }
 
 void EmsTimerCore::toggle_pause(int64_t now_ms) {
@@ -238,26 +238,15 @@ void EmsTimerCore::add_event(EmsEventType type, uint16_t seq, int64_t now_ms) {
     ev.seq = seq;
 
     switch (type) {
-        case EmsEventType::CaseStart: std::snprintf(ev.label, sizeof(ev.label), "CASE START"); break;
+        case EmsEventType::Start: std::snprintf(ev.label, sizeof(ev.label), "START"); break;
         case EmsEventType::Epi:    std::snprintf(ev.label, sizeof(ev.label), "EPI #%u", (unsigned)seq); break;
         case EmsEventType::Shock:  std::snprintf(ev.label, sizeof(ev.label), "SHOCK #%u", (unsigned)seq); break;
         case EmsEventType::Rosc:   std::snprintf(ev.label, sizeof(ev.label), "ROSC"); break;
-        case EmsEventType::Vital:  std::snprintf(ev.label, sizeof(ev.label), "VITAL CHECK"); break;
-        case EmsEventType::Airway: std::snprintf(ev.label, sizeof(ev.label), "AIRWAY PLACED"); break;
-        case EmsEventType::TimerPause: std::snprintf(ev.label, sizeof(ev.label), "TIMER PAUSED"); break;
-        case EmsEventType::TimerResume: std::snprintf(ev.label, sizeof(ev.label), "TIMER RESUMED"); break;
-        case EmsEventType::CprStart: std::snprintf(ev.label, sizeof(ev.label), "CPR START"); break;
-        case EmsEventType::RhythmVf: std::snprintf(ev.label, sizeof(ev.label), "RHYTHM VF"); break;
-        case EmsEventType::RhythmPvt: std::snprintf(ev.label, sizeof(ev.label), "RHYTHM pVT"); break;
-        case EmsEventType::RhythmPea: std::snprintf(ev.label, sizeof(ev.label), "RHYTHM PEA"); break;
-        case EmsEventType::RhythmAsystole: std::snprintf(ev.label, sizeof(ev.label), "ASYSTOLE"); break;
-        case EmsEventType::Amiodarone: std::snprintf(ev.label, sizeof(ev.label), "AMIODARONE"); break;
-        case EmsEventType::Lidocaine: std::snprintf(ev.label, sizeof(ev.label), "LIDOCAINE"); break;
-        case EmsEventType::IvAccess: std::snprintf(ev.label, sizeof(ev.label), "IV ACCESS"); break;
-        case EmsEventType::IoAccess: std::snprintf(ev.label, sizeof(ev.label), "IO ACCESS"); break;
-        case EmsEventType::Capnography: std::snprintf(ev.label, sizeof(ev.label), "CAPNO START"); break;
-        case EmsEventType::Handoff: std::snprintf(ev.label, sizeof(ev.label), "HANDOFF"); break;
-        case EmsEventType::Rearrest: std::snprintf(ev.label, sizeof(ev.label), "RE-ARREST"); break;
+        case EmsEventType::Vital:  std::snprintf(ev.label, sizeof(ev.label), "VITAL"); break;
+        case EmsEventType::Airway: std::snprintf(ev.label, sizeof(ev.label), "AIRWAY"); break;
+        case EmsEventType::Pause: std::snprintf(ev.label, sizeof(ev.label), "PAUSE"); break;
+        case EmsEventType::Resume: std::snprintf(ev.label, sizeof(ev.label), "RESUME"); break;
+        case EmsEventType::Iv:     std::snprintf(ev.label, sizeof(ev.label), "IV"); break;
     }
 }
 

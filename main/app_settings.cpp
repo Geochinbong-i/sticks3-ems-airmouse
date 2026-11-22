@@ -70,6 +70,8 @@ void app_settings_load() {
     }
 
     if (nvs_get_u8(h, "harp_toggle", &b) == ESP_OK) g_settings.harp_toggle = (b != 0);
+    if (nvs_get_i32(h, "harp_turn", &v) == ESP_OK && (v == 45 || v == 60 || v == 75)) g_settings.harp_turn_degrees = v;
+    if (nvs_get_i32(h, "harp_oct", &v) == ESP_OK && v >= 0 && v < 5) g_settings.harp_octaves = v;
 
     StoredImuAbs imu{};
     size_t imu_sz = sizeof(imu);
@@ -131,6 +133,8 @@ void app_settings_save() {
     nvs_set_u8(h, "mute", g_settings.sound_muted ? 1 : 0);
     nvs_set_i32(h, "rot", g_settings.rotation);
     nvs_set_u8(h, "harp_toggle", g_settings.harp_toggle ? 1 : 0);
+    nvs_set_i32(h, "harp_turn", g_settings.harp_turn_degrees);
+    nvs_set_i32(h, "harp_oct", g_settings.harp_octaves);
 
     if (g_settings.imu_abs_valid) {
         StoredImuAbs imu{

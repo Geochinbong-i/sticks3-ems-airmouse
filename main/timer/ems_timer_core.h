@@ -10,26 +10,7 @@ enum class EmsState : uint8_t {
 };
 
 enum class EmsEventType : uint8_t {
-    CaseStart = 0,
-    Epi = 1,
-    Shock = 2,
-    Rosc = 3,
-    Vital = 4,
-    Airway = 5,
-    TimerPause = 6,
-    TimerResume = 7,
-    CprStart,
-    RhythmVf,
-    RhythmPvt,
-    RhythmPea,
-    RhythmAsystole,
-    Amiodarone,
-    Lidocaine,
-    IvAccess,
-    IoAccess,
-    Capnography,
-    Handoff,
-    Rearrest,
+    Start, Epi, Shock, Rosc, Vital, Airway, Pause, Resume, Iv,
 };
 
 struct EmsEvent {

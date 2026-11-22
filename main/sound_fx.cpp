@@ -25,6 +25,8 @@ std::atomic<unsigned> s_requested_harp{0};
 std::atomic<uint8_t> s_volume{0};
 std::atomic<bool> s_ir_listening{false};
 std::atomic<bool> s_ir_ready{false};
+std::atomic<bool> s_voice_requested{false};
+std::atomic<bool> s_voice_ready{false};
 constexpr unsigned kEpiAlarm = 1;
 constexpr unsigned kPresetAlarm = 2;
 constexpr int kHarpChannel = 0;
@@ -136,6 +138,18 @@ void play_alarm(unsigned alarm, uint8_t volume) {
 void sound_task(void *) {
     uint8_t applied_volume = s_volume.load();
     while (true) {
+        if (s_voice_requested.load()) {
+            if (!s_voice_ready.load()) {
+                s_harp.stop();
+                if (M5.Speaker.isRunning()) M5.Speaker.end();
+                s_voice_ready.store(true);
+            }
+            // The recorder owns the shared I2S port. Leave alarms queued
+            // until it returns the port and discard key clicks while recording.
+            SoundCue discarded;
+            xQueueReceive(s_queue, &discarded, pdMS_TO_TICKS(10));
+            continue;
+        }
         const uint8_t volume = s_volume.load();
         if (volume != applied_volume) {
             M5.Speaker.setVolume(volume);
@@ -173,7 +187,8 @@ void sound_task(void *) {
             if (!changing_harp && check_idle_speaker && !M5.Speaker.isPlaying()) M5.Speaker.end();
             continue;
         }
-        if (cue == SoundCue::Wake || s_ir_listening.load() || !M5.Speaker.isEnabled()) continue;
+        if (cue == SoundCue::Wake || s_voice_requested.load() ||
+            s_ir_listening.load() || !M5.Speaker.isEnabled()) continue;
         if (volume == 0 || s_stop_requested.load() || s_pending_alarms.load()) continue;
 
         switch (cue) {
@@ -242,7 +257,7 @@ void sound_fx_stop() {
 }
 
 void sound_fx_harp_play(uint8_t note, uint8_t volume_pct) {
-    if (note >= kAirHarpNoteCount || volume_pct > kAirHarpMaxVolumePct) return;
+    if (note >= kAirHarpAvailableNotes || volume_pct > kAirHarpMaxVolumePct) return;
     const unsigned voice = ((static_cast<unsigned>(note) + 1) << 8) | volume_pct;
     if (s_requested_harp.exchange(voice) != voice) wake_sound_task();
 }
@@ -259,4 +274,23 @@ void sound_fx_set_ir_listening(bool enabled) {
 
 bool sound_fx_ir_ready() {
     return !s_queue || s_ir_ready.load();
+}
+
+bool sound_fx_acquire_voice() {
+    if (!s_queue) return false;
+    s_voice_ready.store(false);
+    s_voice_requested.store(true);
+    wake_sound_task();
+    const int64_t deadline = esp_timer_get_time() + 750000;
+    while (!s_voice_ready.load() && esp_timer_get_time() < deadline) {
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+    if (s_voice_ready.load()) return true;
+    sound_fx_release_voice();
+    return false;
+}
+
+void sound_fx_release_voice() {
+    s_voice_requested.store(false);
+    wake_sound_task();
 }

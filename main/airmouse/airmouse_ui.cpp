@@ -70,14 +70,14 @@ void draw_airmouse_frame(M5Canvas &canvas,
 
         canvas.setTextColor(theme.text, theme.surface);
         canvas.setCursor(11, 82);
-        canvas.print("Hold comfy pose,");
+        canvas.print("Hold your grip");
         canvas.setCursor(11, 98);
         canvas.print("tap B to zero.");
 
         canvas.fillRoundRect(10, 120, w - 20, 24, 4, theme.selected);
         canvas.setTextColor(theme.on_selected, theme.selected);
         canvas.setCursor(14, 124);
-        canvas.print("B : Rel Cal Zero");
+        canvas.print("B Set center");
 
         canvas.fillRoundRect(10, 148, w - 20, 24, 4, theme.alternate);
         canvas.setTextColor(theme.text, theme.alternate);
@@ -89,7 +89,7 @@ void draw_airmouse_frame(M5Canvas &canvas,
         canvas.setCursor(14, 180);
         canvas.print("Hold A+B : Exit");
 
-        ui_draw_themed_footer(canvas, "B: Zero Held Pose", "Hold A+B : Go Home");
+        ui_draw_themed_footer(canvas, "B Set center", "Hold A+B Back");
         ui_present(canvas);
         return;
     }
@@ -179,7 +179,7 @@ void draw_airmouse_frame(M5Canvas &canvas,
     canvas.setCursor(w - 33, sy + 1);
     canvas.print("RMB");
 
-    ui_draw_themed_footer(canvas, "A: Click  B: Right", "Hold B:Scr AB:Menu");
+    ui_draw_themed_footer(canvas, "A Left   B Right", "Hold B: Scroll");
     ui_present(canvas);
 }
 
@@ -243,14 +243,14 @@ void perform_relative_zero(M5Canvas &canvas, AirMouseTransport transport,
     canvas.setCursor(14, 80);
     canvas.print("Held angle is now");
     canvas.setCursor(14, 96);
-    canvas.print("the neutral zero.");
+    canvas.print("the center point.");
 
     canvas.fillRoundRect(14, 126, w - 28, 8, 3, theme.accent);
     canvas.setTextColor(theme.accent, theme.surface);
     canvas.setCursor(14, 146);
     canvas.print("Resuming cursor...");
 
-    ui_draw_themed_footer(canvas, "A: Click  B: Right", "Hold B:Scr AB:Menu");
+    ui_draw_themed_footer(canvas, "A Left   B Right", "Hold B: Scroll");
     ui_present(canvas);
 
     sound_fx_confirm();

@@ -6,7 +6,6 @@
 namespace {
 
 constexpr float kDegrees = 57.2957795f;
-constexpr float kYawLimit = 45.0f;
 constexpr float kPitchLimit = 35.0f;
 
 bool normalize_gravity(float &x, float &y, float &z) {
@@ -25,6 +24,20 @@ int quantize(int current, float position, int count) {
 }
 
 } // namespace
+
+AirHarpNoteRange air_harp_range(AirHarpRange range) {
+    static constexpr AirHarpNoteRange options[] = {
+        {0, 12, "2", "C2-B2"}, {12, 12, "3", "C3-B3"}, {24, 12, "4", "C4-B4"},
+        {0, 24, "2-3", "C2-B3"}, {0, 36, "2-4", "C2-B4"},
+    };
+    const auto index = range < AirHarpRange::Count ? range : AirHarpRange::Oct2To3;
+    return options[static_cast<unsigned>(index)];
+}
+
+AirHarpCore::AirHarpCore(AirHarpRange range, int turn_limit)
+    : range_(air_harp_range(range)), turn_limit_(std::clamp(turn_limit, 45, 75)) {
+    voice_.note = range_.first + range_.count / 2;
+}
 
 float air_harp_note_hz(int note) {
     return 440.0f * std::exp2((note + kAirHarpFirstMidi - 69) / 12.0f);
@@ -72,7 +85,9 @@ bool AirHarpCore::set_neutral(float ax, float ay, float az, int64_t now_ms) {
     pitch_tangent_z_ /= tangent_length;
     yaw_ = filtered_yaw_ = 0;
     last_gyro_ms_ = now_ms;
-    voice_ = {};
+    voice_ = {static_cast<uint8_t>(range_.first + range_.count / 2), AirHarpVoice::center_volume_pct};
+    key_index_ = 6;
+    scale_index_ = 1;
     return true;
 }
 
@@ -104,13 +119,33 @@ bool AirHarpCore::sample_gyro(float gx, float gy, float gz, bool flip_180, int64
     const float reference = up_x_ * center_x_ + up_y_ * center_y_ + up_z_ * center_z_;
     const float vertical = std::atan2(tilt, reference) * kDegrees * (flip_180 ? -1.0f : 1.0f);
     // Give each side of the neutral pose the full range of the hand motion.
-    constexpr int center_note = AirHarpVoice::center_note;
+    const int center_note = range_.count / 2;
     constexpr int center_volume = AirHarpVoice::center_volume_pct;
-    const float note_span = filtered_yaw_ < 0 ? center_note : kAirHarpNoteCount - 1 - center_note;
-    const int note = quantize(voice_.note, center_note + filtered_yaw_ / kYawLimit * note_span, kAirHarpNoteCount);
+    const float note_span = filtered_yaw_ < 0 ? center_note : range_.count - 1 - center_note;
+    const float turn_fraction = filtered_yaw_ / turn_limit_;
+    const int note = range_.first + quantize(voice_.note - range_.first,
+        center_note + turn_fraction * note_span, range_.count);
     const int volume = quantize(voice_.volume_pct, center_volume + vertical / kPitchLimit * center_volume,
                                 kAirHarpMaxVolumePct + 1);
-    const bool changed = note != voice_.note || volume != voice_.volume_pct;
+    const int key = quantize(key_index_, 6 + turn_fraction * (filtered_yaw_ < 0 ? 6 : 5), 12);
+    const int scale = quantize(scale_index_, 1 + vertical / kPitchLimit, 3);
+    const bool changed = note != voice_.note || volume != voice_.volume_pct ||
+                         key != key_index_ || scale != scale_index_;
+    key_index_ = key;
+    scale_index_ = scale;
     voice_ = {static_cast<uint8_t>(note), static_cast<uint8_t>(volume)};
     return changed;
+}
+
+uint8_t AirHarpArpeggio::play(int64_t now_ms, unsigned key, AirHarpScale scale, AirHarpNoteRange range) {
+    constexpr int kBeatStepMs = 250;
+    constexpr int patterns[][4] = {{0, 3, 7, 3}, {0, 4, 7, 4}, {0, 2, 7, 9}};
+    if (step_ < 0) started_ms_ = now_ms;
+    const int64_t next = (now_ms - started_ms_) / kBeatStepMs;
+    if (next != step_) {
+        step_ = next;
+        const int interval = patterns[static_cast<unsigned>(scale)][step_ % 4];
+        note_ = range.first + (key % 12 + interval) % range.count;
+    }
+    return note_;
 }

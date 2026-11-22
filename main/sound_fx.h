@@ -14,3 +14,5 @@ void sound_fx_harp_stop();
 
 void sound_fx_set_ir_listening(bool enabled);
 bool sound_fx_ir_ready();
+bool sound_fx_acquire_voice();
+void sound_fx_release_voice();

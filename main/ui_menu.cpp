@@ -1,4 +1,6 @@
 #include "ui_menu.h"
+#include "input_util.h"
+#include "sound_fx.h"
 #include "ui_theme.h"
 
 #include <algorithm>
@@ -44,6 +46,40 @@ void ui_draw_menu(M5Canvas &canvas, const MenuRow *rows, int count, const MenuCu
         canvas.setFont(&fonts::Font2);
         canvas.setTextSize(1);
         canvas.setTextColor(theme.muted);
-        canvas.drawString(row.subtitle, text_x, y + 23);
+        ui_draw_text_fit(canvas, row.subtitle, text_x, y + 23, canvas.width() - text_x - 5);
+    }
+}
+
+int ui_choose_menu(const char *title, const MenuRow *rows, int count) {
+    M5Canvas canvas(&M5.Display);
+    if (!canvas.createSprite(M5.Display.width(), M5.Display.height())) return -1;
+    input_wait_all_release();
+    MenuCursor cursor;
+    MenuButtons buttons;
+    int64_t next_draw = 0;
+    for (;;) {
+        input_update();
+        const auto now = input_now_ms();
+        const auto action = buttons.update(input_a_down(), input_b_down(), now, false);
+        if (action == MenuAction::Select || action == MenuAction::Back) {
+            sound_fx_click();
+            input_wait_all_release();
+            return action == MenuAction::Select ? cursor.selected : -1;
+        }
+        if (action == MenuAction::Next || action == MenuAction::Previous) {
+            cursor.move(action == MenuAction::Next ? 1 : -1, count);
+            sound_fx_click();
+            next_draw = 0;
+        }
+        if (ui_screen_is_on() && now >= next_draw) {
+            const auto &theme = ui_theme();
+            canvas.fillScreen(theme.background);
+            ui_draw_header(canvas, title, theme.surface, theme.text);
+            ui_draw_menu(canvas, rows, count, cursor);
+            ui_draw_themed_footer(canvas, "A Next   B Open", "Hold A+B Back");
+            ui_present(canvas);
+            next_draw = now + 2000;
+        }
+        input_idle_delay(20);
     }
 }

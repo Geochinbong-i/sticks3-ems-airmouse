@@ -780,7 +780,7 @@ void time_sync_ui_run() {
             canvas.setTextWrap(false);
             canvas.setTextColor(theme.muted, theme.surface);
             canvas.setCursor(9, 26);
-            canvas.printf("RTC UTC%+d", g_settings.tz_offset_hours);
+            canvas.printf("UTC%+d", g_settings.tz_offset_hours);
 
             canvas.setTextColor(synced ? theme.accent : theme.warning, theme.surface);
             const char *sflag = synced ? "SYNCED" : "UNSET";
@@ -820,10 +820,9 @@ void time_sync_ui_run() {
             canvas.fillRoundRect(5, 152, w - 10, 54, 4, theme.surface);
             canvas.setFont(&fonts::Font2);
             canvas.setTextColor(banner_col, theme.surface);
-            canvas.setCursor(9, 154);
-            canvas.print(wifi == WifiSync::Running && manual_sntp
-                        ? (s_wifi_has_ip.load() ? "Waiting for NTP..." : "Joining Wi-Fi...")
-                        : banner_msg);
+            ui_draw_text_fit(canvas, wifi == WifiSync::Running && manual_sntp
+                             ? (s_wifi_has_ip.load() ? "Waiting for NTP" : "Joining Wi-Fi")
+                             : banner_msg, 9, 154, w - 18);
 
             canvas.setTextColor(theme.text, theme.surface);
             if (sel == 0) {
@@ -834,9 +833,7 @@ void time_sync_ui_run() {
             } else if (sel == 1) {
                 canvas.setCursor(9, 171);
                 if (g_settings.wifi_ssid[0] != '\0') {
-                    char sb[48];
-                    std::snprintf(sb, sizeof(sb), "STA:%.12s", g_settings.wifi_ssid);
-                    canvas.print(sb);
+                    canvas.print("Wi-Fi configured");
                 } else {
                     canvas.print("STA: (Set via AP)");
                 }
@@ -849,7 +846,7 @@ void time_sync_ui_run() {
                 canvas.print("Pair via Bluetooth");
             }
 
-            ui_draw_themed_footer(canvas, "A: Select  B: Start", "Hold A+B : Go Back");
+            ui_draw_themed_footer(canvas, "A: Select  B: Start", "Hold A+B Back");
             ui_present(canvas);
         }
 

@@ -12,13 +12,14 @@ namespace {
 constexpr char kTag[] = "ir_remote";
 constexpr gpio_num_t kReceivePin = GPIO_NUM_42;
 constexpr gpio_num_t kSendPin = GPIO_NUM_46;
-constexpr unsigned kResolutionHz = 1000000;
+constexpr unsigned kResolutionHz = 1000000 / kIrTickUs;
 constexpr int64_t kHighPowerSpacingUs = 500000;
 int64_t s_next_high_power_us = 0;
 
 // Only the IR screen owns these buffers. RMT uses them until the transaction completes.
-std::array<rmt_symbol_word_t, 256> s_rx_symbols{};
+std::array<rmt_symbol_word_t, (kIrMaxPulses + 3) / 2> s_rx_symbols{};
 std::array<rmt_symbol_word_t, (kIrMaxPulses + 1) / 2> s_tx_symbols{};
+IrSignal s_tx_signal;
 
 bool IRAM_ATTR receive_done(rmt_channel_handle_t, const rmt_rx_done_event_data_t *data, void *arg) {
     BaseType_t wake = pdFALSE;
@@ -39,18 +40,17 @@ bool check(esp_err_t result, const char *step) {
     return false;
 }
 
-bool apply_carrier(rmt_channel_handle_t tx, bool high_power) {
+bool apply_carrier(rmt_channel_handle_t tx, unsigned carrier_khz, bool high_power) {
     rmt_carrier_config_t carrier{};
-    carrier.frequency_hz = kIrTxCarrierHz;
+    carrier.frequency_hz = carrier_khz * 1000;
     // The board fixes the LED peak current. Increase only the carrier's on-time.
     carrier.duty_cycle = high_power ? 0.50f : 0.33f;
     return check(rmt_apply_carrier(tx, &carrier), "TX carrier");
 }
 } // namespace
 
-bool IrDevice::open(bool high_power) {
+bool IrDevice::open() {
     if (M5.getBoard() != m5::board_t::board_M5StickS3) return false;
-    high_power_ = high_power;
     events_ = xQueueCreate(1, sizeof(size_t));
     if (!events_) return false;
 
@@ -77,7 +77,7 @@ bool IrDevice::open(bool high_power) {
     tx_callbacks.on_trans_done = send_done;
     if (!check(rmt_tx_register_event_callbacks(tx_, &tx_callbacks, events_), "TX callback")) return false;
 
-    if (!apply_carrier(tx_, false)) return false;
+    if (!apply_carrier(tx_, carrier_khz_, false)) return false;
     rmt_copy_encoder_config_t copy{};
     if (!check(rmt_new_copy_encoder(&copy, &encoder_), "TX encoder")) return false;
     tx_enabled_ = check(rmt_enable(tx_), "TX enable");
@@ -94,9 +94,9 @@ bool IrDevice::open(bool high_power) {
 IrDevice::~IrDevice() {
     cancel_receive();
     if (tx_enabled_) {
-        // A frame is bounded to 400 ms. Allow an in-flight send to finish before
+        // A transmission is bounded to 1.2 s. Allow an in-flight send to finish before
         // releasing its encoder, even on an immediate exit by the user.
-        rmt_tx_wait_all_done(tx_, 500);
+        rmt_tx_wait_all_done(tx_, 1500);
         rmt_disable(tx_);
     }
     if (tx_) rmt_del_channel(tx_);
@@ -106,7 +106,7 @@ IrDevice::~IrDevice() {
     if (restore_power_) M5.Power.setExtOutput(false);
 }
 
-bool IrDevice::receive() {
+bool IrDevice::receive(bool extended) {
     if (!rx_ || !events_) return false;
     if (!rx_enabled_) {
         rx_enabled_ = check(rmt_enable(rx_), "RX enable");
@@ -115,7 +115,7 @@ bool IrDevice::receive() {
     xQueueReset(events_);
     rmt_receive_config_t config{};
     config.signal_range_min_ns = 1250;
-    config.signal_range_max_ns = kIrSignalGapUs * 1000;
+    config.signal_range_max_ns = (extended ? kIrLongGapUs : kIrSignalGapUs) * 1000;
     return check(rmt_receive(rx_, s_rx_symbols.data(), sizeof(s_rx_symbols), &config), "RX start");
 }
 
@@ -124,11 +124,11 @@ IrReceive IrDevice::poll_receive(IrSignal &signal) {
     if (xQueueReceive(events_, &count, 0) != pdTRUE) return IrReceive::Pending;
     if (count == 0 || count >= s_rx_symbols.size()) return IrReceive::Rejected;
 
-    signal = {};
+    signal.count = 0;
     for (size_t i = 0; i < count; ++i) {
         const auto &symbol = s_rx_symbols[i];
-        if (!ir_add_pulse(signal, symbol.level0, symbol.duration0) ||
-            !ir_add_pulse(signal, symbol.level1, symbol.duration1)) return IrReceive::Rejected;
+        if (!ir_add_pulse(signal, symbol.level0, symbol.duration0 * kIrTickUs) ||
+            !ir_add_pulse(signal, symbol.level1, symbol.duration1 * kIrTickUs)) return IrReceive::Rejected;
     }
     return ir_finish_signal(signal) ? IrReceive::Captured : IrReceive::Rejected;
 }
@@ -141,26 +141,29 @@ void IrDevice::cancel_receive() {
     }
 }
 
-bool IrDevice::send(const IrSignal &signal) {
-    if (!tx_enabled_ || !ir_valid_signal(signal)) return false;
+bool IrDevice::send(const IrSignal &signal, const IrProfile &profile) {
+    if (!tx_enabled_ || !ir_build_tx(signal, profile, s_tx_signal)) return false;
     cancel_receive();
     xQueueReset(events_);
 
     // Keep boosted bursts close to the LED on-time of a single remote-control frame.
     const int64_t now_us = esp_timer_get_time();
-    const bool high = high_power_ && now_us >= s_next_high_power_us && ir_supports_high_power(signal);
-    if (high != carrier_high_) {
-        if (!apply_carrier(tx_, high)) return false;
+    const bool high = profile.high_power && now_us >= s_next_high_power_us && ir_supports_high_power(s_tx_signal);
+    if (high != carrier_high_ || profile.carrier_khz != carrier_khz_) {
+        if (!apply_carrier(tx_, profile.carrier_khz, high)) return false;
         carrier_high_ = high;
+        carrier_khz_ = profile.carrier_khz;
     }
 
-    const size_t count = (signal.count + 1) / 2;
+    const size_t count = (s_tx_signal.count + 1) / 2;
     for (size_t i = 0; i < count; ++i) {
         const size_t pulse = i * 2;
         rmt_symbol_word_t symbol{};
         symbol.level0 = 1;
-        symbol.duration0 = signal.duration_us[pulse];
-        if (pulse + 1 < signal.count) symbol.duration1 = signal.duration_us[pulse + 1];
+        symbol.duration0 = (s_tx_signal.duration_us[pulse] + kIrTickUs / 2) / kIrTickUs;
+        if (pulse + 1 < s_tx_signal.count) {
+            symbol.duration1 = (s_tx_signal.duration_us[pulse + 1] + kIrTickUs / 2) / kIrTickUs;
+        }
         s_tx_symbols[i] = symbol;
     }
 

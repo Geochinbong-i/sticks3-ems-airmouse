@@ -22,3 +22,5 @@ void ui_draw_header(M5Canvas &canvas, const char *title, uint32_t hdr_col,
 
 // Draws the 29px, two-line footer using the selected theme.
 void ui_draw_themed_footer(M5Canvas &canvas, const char *line1, const char *line2);
+void ui_draw_text_fit(M5Canvas &canvas, const char *text, int x, int y, int available);
+void ui_draw_mic_icon(M5Canvas &canvas, int x, int y, uint32_t color);

@@ -24,6 +24,8 @@ struct AppSettings {
     bool air_natural_scroll = false;
 
     bool harp_toggle = false;
+    int harp_turn_degrees = 45;
+    int harp_octaves = 3;       // AirHarpRange::Oct2To3
     bool ir_tx_high = false;
 
     bool imu_abs_valid = false;

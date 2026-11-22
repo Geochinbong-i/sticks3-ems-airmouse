@@ -93,17 +93,17 @@ EmsAlarmState ems_timer_active_alarms() {
 }
 
 enum class EmsAction : int {
-    Epi, Shock, Rhythm, Rosc, Other, Vital, Logs, PauseResume, Reset, Count,
+    Epi, Shock, Rosc, Vital, Airway, Iv, PauseResume, Logs, Reset, Count,
 };
 
 static const char *action_name(EmsAction act, EmsState st) {
     switch (act) {
         case EmsAction::Epi: return "LOG EPI";
         case EmsAction::Shock: return "LOG SHOCK";
-        case EmsAction::Rhythm: return "LOG RHYTHM";
         case EmsAction::Rosc: return "LOG ROSC";
         case EmsAction::Vital: return "LOG VITAL";
-        case EmsAction::Other: return "MORE EVENTS";
+        case EmsAction::Airway: return "LOG AIRWAY";
+        case EmsAction::Iv: return "LOG IV";
         case EmsAction::PauseResume: return (st == EmsState::Paused) ? "RESUME" : "PAUSE";
         case EmsAction::Logs: return "VIEW LOGS";
         case EmsAction::Reset: return "RESET";
@@ -250,7 +250,7 @@ static void draw_logs(M5Canvas &canvas, size_t page) {
         }
     }
 
-    ui_draw_themed_footer(canvas, pages > 1 ? "A: Next pg  B: Back" : "B: Back",
+    ui_draw_themed_footer(canvas, pages > 1 ? "A Next   B Back" : "B: Back",
                           start_utc_ms > 0 ? "Elapsed / Local time" : "+ Time since start");
     ui_present(canvas);
 }
@@ -287,80 +287,6 @@ static void show_logs_modal(M5Canvas &canvas) {
         if (!ui_screen_is_on()) redraw = true;
         if (redraw && ui_screen_is_on()) {
             draw_logs(canvas, page);
-            redraw = false;
-        }
-        input_idle_delay(25);
-    }
-}
-
-struct EventChoice {
-    const char *label;
-    EmsEventType event;
-};
-
-static constexpr EventChoice kRhythmEvents[] = {
-    {"VF", EmsEventType::RhythmVf}, {"Pulseless VT", EmsEventType::RhythmPvt},
-    {"PEA", EmsEventType::RhythmPea}, {"Asystole", EmsEventType::RhythmAsystole},
-};
-static constexpr EventChoice kOtherEvents[] = {
-    {"CPR start", EmsEventType::CprStart}, {"Amiodarone", EmsEventType::Amiodarone},
-    {"Lidocaine", EmsEventType::Lidocaine}, {"IV access", EmsEventType::IvAccess},
-    {"IO access", EmsEventType::IoAccess}, {"Airway placed", EmsEventType::Airway},
-    {"Capno start", EmsEventType::Capnography}, {"Re-arrest", EmsEventType::Rearrest},
-    {"Handoff", EmsEventType::Handoff},
-};
-
-template <size_t Count>
-static bool choose_event(M5Canvas &canvas, const char *title, const EventChoice (&choices)[Count]) {
-    input_wait_all_release();
-    size_t selected = 0;
-    bool redraw = true;
-    while (true) {
-        input_update();
-        const bool confirm = input_b_pressed();
-        if (input_ab_held(400) || (confirm && selected == Count)) {
-            sound_fx_click();
-            input_wait_all_release();
-            return false;
-        }
-        if (input_a_pressed()) {
-            selected = (selected + 1) % (Count + 1);
-            sound_fx_click();
-            redraw = true;
-        } else if (confirm) {
-            {
-                TimerLock lock;
-                s_timer.log_event(choices[selected].event, input_now_ms());
-            }
-            sound_fx_confirm();
-            input_wait_all_release();
-            return true;
-        }
-
-        const auto &theme = ui_theme();
-        if (!ui_screen_is_on()) redraw = true;
-        if (redraw && ui_screen_is_on()) {
-            canvas.fillScreen(theme.background);
-            ui_draw_header(canvas, title, theme.surface, theme.text);
-            canvas.setFont(&fonts::Font2);
-            constexpr size_t rows = 8;
-            const size_t first = selected < rows ? 0 : selected - rows + 1;
-            const int center = canvas.width() / 2;
-            if (first > 0) canvas.fillTriangle(center, 24, center - 4, 28, center + 4, 28, theme.accent);
-            if (first + rows <= Count) {
-                canvas.fillTriangle(center, 205, center - 4, 201, center + 4, 201, theme.accent);
-            }
-            for (size_t i = first; i < first + rows && i <= Count; ++i) {
-                const int y = 31 + (int)(i - first) * 21;
-                const bool focused = i == selected;
-                const auto bg = focused ? theme.selected : (i % 2 == 0 ? theme.surface : theme.alternate);
-                canvas.fillRect(3, y, canvas.width() - 6, 20, bg);
-                if (focused) canvas.fillRect(3, y, 3, 20, theme.on_selected);
-                canvas.setTextColor(focused ? theme.on_selected : theme.text, bg);
-                canvas.drawString(i == Count ? "< BACK" : choices[i].label, 9, y + 2);
-            }
-            ui_draw_themed_footer(canvas, "A: Next   B: Log", "Hold A+B : Back");
-            ui_present(canvas);
             redraw = false;
         }
         input_idle_delay(25);
@@ -562,9 +488,9 @@ static void draw_ems_frame(M5Canvas &canvas, int64_t now_ms, EmsAction sel_actio
         canvas.setFont(&fonts::Font2);
         canvas.setTextColor(theme.on_selected, theme.selected);
         canvas.setTextDatum(MC_DATUM);
-        canvas.drawString("B: START TIMER", w / 2, h - 45);
+        canvas.drawString("Start timer", w / 2, h - 45);
         canvas.setTextDatum(TL_DATUM);
-        ui_draw_themed_footer(canvas, "A:Preset  HoldB:EPI", "Hold A+B : Go Home");
+        ui_draw_themed_footer(canvas, "A Preset   B Start", "Hold B: EPI interval");
     } else {
         const char *aname = action_name(sel_action, st);
         canvas.fillRect(4, h - 56, w - 8, 22, theme.selected);
@@ -575,7 +501,7 @@ static void draw_ems_frame(M5Canvas &canvas, int64_t now_ms, EmsAction sel_actio
         canvas.setTextDatum(MC_DATUM);
         canvas.drawString(act_line, w / 2, h - 45);
         canvas.setTextDatum(TL_DATUM);
-        ui_draw_themed_footer(canvas, "A:Act  B:OK  HB:EPI", "Hold A+B : Go Home");
+        ui_draw_themed_footer(canvas, "A Next   B Confirm", "Hold B: Log EPI");
     }
 
     ui_present(canvas);
@@ -714,35 +640,22 @@ void ems_timer_ui_run() {
                             sound_fx_epi_logged();
                             break;
                         case EmsAction::Shock:
-                            {
-                                TimerLock lock;
-                                s_timer.log_event(EmsEventType::Shock, now_ms);
-                            }
-                            sound_fx_confirm();
-                            sel_action = EmsAction::Epi;
-                            break;
                         case EmsAction::Rosc:
-                            {
-                                TimerLock lock;
-                                s_timer.log_event(EmsEventType::Rosc, now_ms);
-                            }
-                            sound_fx_confirm();
-                            sel_action = EmsAction::Epi;
-                            break;
                         case EmsAction::Vital:
+                        case EmsAction::Airway:
+                        case EmsAction::Iv: {
+                            constexpr EmsEventType events[] = {
+                                EmsEventType::Shock, EmsEventType::Rosc, EmsEventType::Vital,
+                                EmsEventType::Airway, EmsEventType::Iv,
+                            };
                             {
                                 TimerLock lock;
-                                s_timer.log_event(EmsEventType::Vital, now_ms);
+                                s_timer.log_event(events[(int)sel_action - (int)EmsAction::Shock], now_ms);
                             }
                             sound_fx_confirm();
                             sel_action = EmsAction::Epi;
                             break;
-                        case EmsAction::Rhythm:
-                            if (choose_event(canvas, "LOG RHYTHM", kRhythmEvents)) sel_action = EmsAction::Epi;
-                            break;
-                        case EmsAction::Other:
-                            if (choose_event(canvas, "MORE EVENTS", kOtherEvents)) sel_action = EmsAction::Epi;
-                            break;
+                        }
                         case EmsAction::PauseResume:
                             {
                                 TimerLock lock;

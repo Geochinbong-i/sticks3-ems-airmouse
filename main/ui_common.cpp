@@ -154,13 +154,13 @@ void ui_draw_header(M5Canvas &canvas, const char *title, uint32_t hdr_col,
     canvas.setTextSize(1);
     canvas.setTextWrap(false);
     canvas.setTextColor(fg_col, hdr_col);
-    canvas.setCursor(title_x, 3);
-    canvas.print(title);
+    const int battery_x = w - 4 - canvas.textWidth("100%") - 11;
+    ui_draw_text_fit(canvas, title, title_x, 3, battery_x - title_x - 3);
 
     if (badge_txt && badge_txt[0] != '\0') {
         int bx = title_x + canvas.textWidth(title) + 4;
         int bw = canvas.textWidth(badge_txt) + 6;
-        if (bx + bw < w - 42) {
+        if (bx + bw < battery_x) {
             canvas.fillRoundRect(bx, 3, bw, 15, 2, badge_bg);
             canvas.setTextColor(badge_fg, badge_bg);
             canvas.setCursor(bx + 3, 3);
@@ -169,6 +169,16 @@ void ui_draw_header(M5Canvas &canvas, const char *title, uint32_t hdr_col,
     }
 
     ui_draw_battery_badge(canvas, w - 4, kHdrH, hdr_col);
+}
+
+void ui_draw_text_fit(M5Canvas &canvas, const char *text, int x, int y, int available) {
+    const int pixels = canvas.textWidth(text);
+    if (pixels > available && available > 0) {
+        canvas.setTextSize(static_cast<float>(available) / pixels, 1.0f);
+    }
+    canvas.setTextDatum(TL_DATUM);
+    canvas.drawString(text, x, y);
+    canvas.setTextSize(1);
 }
 
 void ui_draw_themed_footer(M5Canvas &canvas, const char *line1, const char *line2) {
@@ -185,8 +195,15 @@ void ui_draw_themed_footer(M5Canvas &canvas, const char *line1, const char *line
     canvas.setTextSize(1);
     canvas.setTextWrap(false);
     canvas.setTextColor(theme.muted, theme.background);
-    canvas.setCursor(3, top + 1);
-    canvas.print(line1);
-    canvas.setCursor(3, top + 14);
-    canvas.print(line2);
+    ui_draw_text_fit(canvas, line1, 3, top + 1, w - 6);
+    ui_draw_text_fit(canvas, line2, 3, top + 14, w - 6);
+}
+
+void ui_draw_mic_icon(M5Canvas &canvas, int x, int y, uint32_t color) {
+    canvas.fillRoundRect(x + 3, y, 5, 9, 2, color);
+    canvas.drawFastVLine(x + 1, y + 4, 5, color);
+    canvas.drawFastVLine(x + 9, y + 4, 5, color);
+    canvas.drawFastHLine(x + 2, y + 9, 7, color);
+    canvas.drawFastVLine(x + 5, y + 9, 4, color);
+    canvas.drawFastHLine(x + 3, y + 13, 5, color);
 }

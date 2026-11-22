@@ -16,6 +16,7 @@
 #include "ui_menu.h"
 #include "airmouse/airmouse_ui.h"
 #include "air_harp/air_harp_ui.h"
+#include "audio/voice_ui.h"
 #include "timer/ems_timer_ui.h"
 #include "timer/simple_timer_ui.h"
 
@@ -23,23 +24,8 @@
 
 static const char *TAG = "sticks3_app";
 
-enum class HomeItem { Timer, BleMouse, UsbMouse, AirHarp, IrRemote, Settings, Count };
+enum class HomeItem { Timer, AirMouse, AirHarp, IrRemote, Recorder, Settings, Count };
 constexpr int kHomeItemCount = static_cast<int>(HomeItem::Count);
-
-static void draw_sync_icon(M5Canvas &canvas, BootTimeSync source, uint32_t color) {
-    if (source == BootTimeSync::WiFi) {
-        canvas.drawArc(10, 15, 9, 8, 225, 315, color);
-        canvas.drawArc(10, 15, 6, 5, 225, 315, color);
-        canvas.drawArc(10, 15, 3, 2, 225, 315, color);
-        canvas.drawPixel(10, 15, color);
-    } else {
-        canvas.drawFastVLine(9, 4, 15, color);
-        canvas.drawLine(9, 4, 13, 8, color);
-        canvas.drawLine(13, 8, 5, 16, color);
-        canvas.drawLine(5, 6, 13, 14, color);
-        canvas.drawLine(13, 14, 9, 18, color);
-    }
-}
 
 static void draw_home_screen(M5Canvas &canvas, const MenuCursor &cursor, int64_t now_ms) {
     bool ems_run = ems_timer_is_running();
@@ -62,7 +48,7 @@ static void draw_home_screen(M5Canvas &canvas, const MenuCursor &cursor, int64_t
         localtime_r(&now, &local);
         std::strftime(clock_text, sizeof(clock_text), "%H:%M:%S", &local);
     }
-    const char *hdr_title = show_alarm ? alarms.title() : show_sync ? "SYNC" : clock_text;
+    const char *hdr_title = show_alarm ? alarms.title() : show_sync ? (sync == BootTimeSync::WiFi ? "WI-FI SYNC" : "BLE SYNC") : clock_text;
     const char *badge = nullptr;
     uint32_t badge_bg = 0x4A3208;
     uint32_t badge_fg = 0xFFAB40;
@@ -79,23 +65,22 @@ static void draw_home_screen(M5Canvas &canvas, const MenuCursor &cursor, int64_t
     }
     ui_draw_header(canvas, hdr_title, hdr_col,
                    show_alarm ? 0xFFFFFFu : theme.accent,
-                   badge, badge_bg, badge_fg, show_sync ? 21 : 4);
-    if (show_sync) draw_sync_icon(canvas, sync, theme.accent);
+                   badge, badge_bg, badge_fg);
 
     const bool simple_mode = (g_settings.timer_mode == 0);
     const MenuRow rows[kHomeItemCount] = {
-        {simple_mode ? "SIMPLE TIMER" : "EMS TIMER",
-         simple_mode ? "7-Color Stamp" : "Events / Reminders",
+        {simple_mode ? "TIMER" : "EMS TIMER",
+         simple_mode ? "Time and voice" : "Events and alerts",
          0xFF5252},
-        {"BLE MOUSE", "Bluetooth Gyro", 0x29B6F6},
-        {"USB MOUSE", "USB-C HID Gyro", 0x00BFA5},
-        {"AIR HARP",  "Pitch / Volume", 0xC393FF},
-        {"IR REMOTE", "Learn / Send", 0xFF946A},
-        {"SETTINGS",  "Bright/Cal/Time", 0xFFB300},
+        {"AIR MOUSE", "Bluetooth / USB-C", 0x29B6F6},
+        {"AIR HARP",  "Note / Arpeggio", 0xC393FF},
+        {"IR REMOTE", "Learn and test", 0xFF946A},
+        {"RECORDER", "Voice recordings", 0xFF5252},
+        {"SETTINGS",  "Display / Sound", 0xFFB300},
     };
 
     ui_draw_menu(canvas, rows, kHomeItemCount, cursor);
-    ui_draw_themed_footer(canvas, "A Next   B Open", "A+B Prev  Hold A Mute");
+    ui_draw_themed_footer(canvas, "A Next / Hold: Mute", "B Open   A+B Prev");
     ui_present(canvas);
 }
 
@@ -111,7 +96,7 @@ extern "C" void app_main(void) {
     ESP_LOGI(TAG, "nvs_flash_init: %s", esp_err_to_name(nvs_ret));
 
     auto cfg = M5.config();
-    cfg.internal_mic = false;
+    cfg.internal_mic = true;
     M5.begin(cfg);
     ui_init_backlight();
     power_save_init();
@@ -161,10 +146,18 @@ extern "C" void app_main(void) {
                     if (g_settings.timer_mode == 0) simple_timer_ui_run();
                     else ems_timer_ui_run();
                     break;
-                case HomeItem::BleMouse: airmouse_ui_run(AirMouseTransport::Ble); break;
-                case HomeItem::UsbMouse: airmouse_ui_run(AirMouseTransport::Usb); break;
+                case HomeItem::AirMouse: {
+                    constexpr MenuRow modes[] = {
+                        {"BLUETOOTH", "Wireless mouse", 0x29B6F6},
+                        {"USB-C", "Wired mouse", 0x29B6F6},
+                    };
+                    const int mode = ui_choose_menu("AIR MOUSE", modes, 2);
+                    if (mode >= 0) airmouse_ui_run(mode == 0 ? AirMouseTransport::Ble : AirMouseTransport::Usb);
+                    break;
+                }
                 case HomeItem::AirHarp: air_harp_ui_run(); break;
                 case HomeItem::IrRemote: ir_ui_run(); break;
+                case HomeItem::Recorder: voice_recorder_ui_run(); break;
                 case HomeItem::Settings: settings_ui_run(); break;
                 case HomeItem::Count: break;
             }

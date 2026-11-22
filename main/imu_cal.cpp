@@ -47,7 +47,7 @@ void draw_abs_cal_idle(M5Canvas &canvas, CalViewState vst, float last_spread) {
     int w = canvas.width();
     const auto &theme = ui_theme();
     canvas.fillScreen(theme.background);
-    ui_draw_header(canvas, "IMU ABS CAL", theme.surface, theme.accent);
+    ui_draw_header(canvas, "IMU CAL", theme.surface, theme.accent);
 
     canvas.setFont(&fonts::Font2);
     canvas.setTextSize(1);
@@ -65,7 +65,7 @@ void draw_abs_cal_idle(M5Canvas &canvas, CalViewState vst, float last_spread) {
         canvas.setCursor(13, 62);
         canvas.print("Offsets saved to");
         canvas.setCursor(13, 78);
-        canvas.print("NVS flash memory.");
+        canvas.print("device storage.");
 
         canvas.drawFastHLine(13, 102, w - 26, theme.border);
         canvas.setTextColor(theme.muted, theme.surface);
@@ -86,7 +86,7 @@ void draw_abs_cal_idle(M5Canvas &canvas, CalViewState vst, float last_spread) {
 
         canvas.setTextColor(theme.text, theme.surface);
         canvas.setCursor(13, 66);
-        canvas.print("Place StickS3 flat");
+        canvas.print("Place unit flat");
         canvas.setCursor(13, 82);
         canvas.print("and keep still.");
 
@@ -104,9 +104,9 @@ void draw_abs_cal_idle(M5Canvas &canvas, CalViewState vst, float last_spread) {
 
         canvas.setTextColor(theme.text, theme.surface);
         canvas.setCursor(13, 60);
-        canvas.print("Place StickS3 flat");
+        canvas.print("Place unit flat");
         canvas.setCursor(13, 76);
-        canvas.print("on a steady table.");
+        canvas.print("on a flat surface.");
 
         canvas.drawFastHLine(13, 100, w - 26, theme.border);
         canvas.setTextColor(theme.muted, theme.surface);
@@ -127,10 +127,10 @@ void draw_abs_cal_idle(M5Canvas &canvas, CalViewState vst, float last_spread) {
     canvas.fillRoundRect(6, 168, w - 12, 30, 5, theme.selected);
     canvas.setTextColor(theme.on_selected, theme.selected);
     canvas.setTextDatum(MC_DATUM);
-    canvas.drawString("B : START ABS CAL", w / 2, 183);
+    canvas.drawString("B Start cal", w / 2, 183);
     canvas.setTextDatum(TL_DATUM);
 
-    ui_draw_themed_footer(canvas, "A: Clear   B: Start", "Hold A+B : Go Back");
+    ui_draw_themed_footer(canvas, "A: Clear   B: Start", "Hold A+B Back");
     ui_present(canvas);
 }
 
@@ -138,7 +138,7 @@ void draw_sampling_progress(M5Canvas &canvas, int done, int total) {
     int w = canvas.width();
     const auto &theme = ui_theme();
     canvas.fillScreen(theme.background);
-    ui_draw_header(canvas, "IMU ABS CAL", theme.surface, theme.accent);
+    ui_draw_header(canvas, "IMU CAL", theme.surface, theme.accent);
 
     canvas.drawRoundRect(6, 36, w - 12, 148, 7, theme.warning);
     canvas.fillRoundRect(7, 37, w - 14, 146, 6, theme.surface);
@@ -152,9 +152,9 @@ void draw_sampling_progress(M5Canvas &canvas, int done, int total) {
 
     canvas.setTextColor(theme.text, theme.surface);
     canvas.setCursor(13, 72);
-    canvas.print("Do not move unit.");
+    canvas.print("Hold still.");
     canvas.setCursor(13, 90);
-    canvas.print("Measuring 150 pts");
+    canvas.print("Taking 150 samples");
 
     int bar_w = w - 30;
     int fill_w = (done * bar_w) / total;
