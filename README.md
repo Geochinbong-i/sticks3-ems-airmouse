@@ -90,7 +90,9 @@ Display, Time, Timers, Air Mouse, Air Harp, Sound, IR Remote, Device로 나뉩�
 
 이 저장소는 GitHub Actions에서 **ESP-IDF v5.3.1 (`esp32s3`)**으로 자동 빌드됩니다.
 
-기존 기기에서 녹음 기능을 활성화하려면 처음 한 번 새 파티션 테이블(`0x8000`)도 앱과 함께 기록합니다. 기존 NVS와 OTA 앱 슬롯 주소는 동일합니다. 녹음 영역에 이전 데이터가 남아 `Storage needs setup`이 표시되면, 녹음 영역의 원본을 백업한 뒤 ESP-IDF의 동일한 SPIFFS 설정으로 생성한 빈 이미지를 해당 영역에 기록해야 합니다. 설정과 IR 슬롯을 보존하려면 보드 전체를 지우지 말고 파티션 테이블과 사용 중인 앱 슬롯만 업데이트합니다.
+OTA 앱 슬롯은 각각 2.25MiB이며 `ota_0`은 `0x20000`, `ota_1`은 `0x260000`부터 시작합니다. 녹음용 SPIFFS는 `0x4a0000`부터 3.375MiB를 사용합니다. 이 구성에서 USB로 앱만 업데이트할 때는 활성 슬롯 주소를 사용합니다.
+
+이전 3MiB 슬롯 구성에서는 파티션 테이블(`0x8000`)과 옮겨진 슬롯 및 녹음 파티션을 함께 갱신합니다. 음성 파일은 먼저 파일 단위로 백업하고, 새 파티션 크기에 맞는 SPIFFS 이미지에 넣어 복원합니다. 기존 NVS와 OTA 선택 정보는 해당 주소에 보존합니다.
 
 1. GitHub 저장소의 **Actions** 탭 → **Build StickS3 EMS & AirMouse Firmware** 실행 결과에서 `sticks3-ems-airmouse-<sha>` 아티팩트를 다운로드합니다.
 2. 압축 해제 후 아래 명령으로 StickS3에 플래시합니다 (`COM번호` 또는 `/dev/ttyACM0` 확인).
