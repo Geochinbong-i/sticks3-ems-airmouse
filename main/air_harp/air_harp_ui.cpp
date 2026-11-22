@@ -96,7 +96,7 @@ void draw_calibration(M5Canvas &canvas, bool imu_active) {
     ui_present(canvas);
 }
 
-void draw_status(M5Canvas &canvas, HarpStatus status) {
+void draw_status(M5Canvas &canvas, HarpStatus status, const char *pattern_name) {
     const char *text = "Ready";
     switch (status) {
         case HarpStatus::Silent: text = "Silent"; break;
@@ -106,6 +106,11 @@ void draw_status(M5Canvas &canvas, HarpStatus status) {
     canvas.fillRect(0, 25, canvas.width(), 25, ui_theme().background);
     canvas.setFont(&fonts::Font2);
     canvas.setTextColor(status == HarpStatus::Playing ? ui_theme().accent : ui_theme().muted);
+    char caption[24];
+    if (pattern_name) {
+        std::snprintf(caption, sizeof(caption), "%s / %s", pattern_name, text);
+        text = caption;
+    }
     canvas.drawCentreString(text, canvas.width() / 2, 29);
 }
 
@@ -166,7 +171,8 @@ void present_band(M5Canvas &canvas, int y, int height) {
 
 } // namespace
 
-static void play_harp(bool arp) {
+static void play_harp(const MenuRow *pattern, AirHarpPattern melody = AirHarpPattern::Classic) {
+    const bool arp = pattern != nullptr;
     M5Canvas canvas(&M5.Display);
     if (!canvas.createSprite(M5.Display.width(), M5.Display.height())) return;
     input_wait_all_release();
@@ -174,7 +180,7 @@ static void play_harp(bool arp) {
     const auto range_setting = static_cast<AirHarpRange>(g_settings.harp_octaves);
     const auto range = air_harp_range(range_setting);
     AirHarpCore harp(range_setting, g_settings.harp_turn_degrees);
-    AirHarpArpeggio arp_player;
+    AirHarpArpeggio arp_player(melody);
     NeutralSamples neutral;
     bool imu_active = false;
     bool calibrated = false;
@@ -294,7 +300,7 @@ static void play_harp(bool arp) {
                                g_settings.sound_muted && !alarms.any() ? "MUTE" : nullptr);
                 next_header_ms = now_ms + 2000;
             }
-            if (status_changed) draw_status(canvas, status);
+            if (status_changed) draw_status(canvas, status, pattern ? pattern->title : nullptr);
             if (key_changed) draw_key(canvas, arp ? harp.key() : voice.note, arp, accent);
             if (bottom_changed) {
                 if (arp) draw_scale(canvas, harp.scale());
@@ -324,6 +330,7 @@ static void play_harp(bool arp) {
 
     sound_fx_harp_stop();
     imu_set_idle();
+    sound_fx_back();
     input_wait_ab_release();
 }
 
@@ -333,6 +340,23 @@ void air_harp_ui_run() {
         {"SINGLE", "Pitch and volume", 0xC393FFu},
         {"ARPEGGIO", "Key and scale", 0xC393FFu},
     };
-    const int mode = ui_choose_menu("AIR HARP", modes, 2);
-    if (mode >= 0) play_harp(mode == 1);
+    constexpr MenuRow patterns[] = {
+        {"CLASSIC", "Four-note loop", 0xC393FFu},
+        {"RISE", "Quick scale steps", 0xC393FFu},
+        {"WALTZ", "Long first beat", 0xC393FFu},
+        {"WAVE", "Uneven rhythm", 0xC393FFu},
+    };
+    for (;;) {
+        const int mode = ui_choose_menu("AIR HARP", modes, std::size(modes));
+        if (mode < 0) return;
+        if (mode == 0) {
+            play_harp(nullptr);
+        } else {
+            for (;;) {
+                const int melody = ui_choose_menu("ARP PATTERN", patterns, std::size(patterns));
+                if (melody < 0) break;
+                play_harp(&patterns[melody], static_cast<AirHarpPattern>(melody));
+            }
+        }
+    }
 }

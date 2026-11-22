@@ -330,7 +330,7 @@ void airmouse_ui_run(AirMouseTransport transport) {
             } else {
                 airmouse_usb_stop();
             }
-            sound_fx_click();
+            sound_fx_back();
             input_wait_ab_release();
             canvas.deleteSprite();
             return;

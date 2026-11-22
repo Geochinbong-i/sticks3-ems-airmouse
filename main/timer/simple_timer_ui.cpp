@@ -148,6 +148,7 @@ bool confirm_clear(M5Canvas &canvas) {
     for (;;) {
         input_update();
         if (input_a_pressed() || input_ab_held(500)) {
+            sound_fx_back();
             input_wait_all_release();
             return false;
         }
@@ -183,14 +184,20 @@ void show_log(M5Canvas &canvas) {
     bool redraw = true;
     for (;;) {
         input_update();
-        if (input_ab_held(500)) break;
+        if (input_ab_held(500)) {
+            sound_fx_back();
+            break;
+        }
         if (input_a_pressed() && count) {
             selected = (selected + 1) % (count + 1);
             sound_fx_click();
             status = nullptr;
             redraw = true;
         } else if (input_b_pressed()) {
-            if (!count) break;
+            if (!count) {
+                sound_fx_back();
+                break;
+            }
             if (selected == count) {
                 if (confirm_clear(canvas)) {
                     const SimpleTimerCore cleared;
@@ -290,7 +297,10 @@ void simple_timer_ui_run() {
     for (;;) {
         input_update();
         const auto now = input_now_ms();
-        if (input_ab_held(600)) break;
+        if (input_ab_held(600)) {
+            sound_fx_back();
+            break;
+        }
         const bool a_down = input_a_down();
         if (a_down && input_b_down()) tracking = false;
         else if (a_down && !was_a_down) {

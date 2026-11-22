@@ -9,6 +9,7 @@ inline constexpr int kAirHarpMaxVolumePct = 100;
 
 enum class AirHarpRange : uint8_t { Oct2, Oct3, Oct4, Oct2To3, Oct2To4, Count };
 enum class AirHarpScale : uint8_t { Minor, Major, Pentatonic };
+enum class AirHarpPattern : uint8_t { Classic, Rise, Waltz, Wave };
 
 struct AirHarpNoteRange {
     int first;
@@ -62,10 +63,12 @@ private:
 
 class AirHarpArpeggio {
 public:
+    explicit AirHarpArpeggio(AirHarpPattern pattern = AirHarpPattern::Classic) : pattern_(pattern) {}
     uint8_t play(int64_t now_ms, unsigned key, AirHarpScale scale, AirHarpNoteRange range);
     void stop() { step_ = -1; }
 
 private:
+    AirHarpPattern pattern_;
     int64_t started_ms_ = 0;
     int64_t step_ = -1;
     uint8_t note_ = 0;

@@ -48,7 +48,7 @@ M5Stack **StickS3** (`ESP32-S3-PICO-1-N8R8`) 전용 경량 펌웨어입니다.
 
 ### 3. AIR HARP
 
-홈에서 **AIR HARP**를 열고 **SINGLE** 또는 **ARPEGGIO**를 선택합니다. 평소 연주 자세로 잠깐 멈추면 기준 자세를 잡습니다.
+홈에서 **AIR HARP**를 열고 **SINGLE** 또는 **ARPEGGIO**를 선택합니다. ARPEGGIO에서는 `CLASSIC / RISE / WALTZ / WAVE` 중 멜로디를 고릅니다. 평소 연주 자세로 잠깐 멈추면 기준 자세를 잡습니다.
 
 - **SINGLE**은 좌우로 반음씩, 상하로 음량 0–100%를 조절합니다. **ARPEGGIO**는 좌우로 으뜸음, 상하로 장조·자연단음계·펜타토닉을 선택해 자동으로 연주합니다. 조와 스케일 변경은 다음 박자에 적용합니다.
 - **Settings → Air Harp**에서 회전 범위(좌우 각각 45°, 60°, 75°), 옥타브(2, 3, 4, 2–3, 2–4), A 버튼 방식을 고릅니다. HOLD는 누르는 동안, TOGGLE은 누를 때마다 연주를 켜거나 끕니다.
@@ -57,7 +57,7 @@ M5Stack **StickS3** (`ESP32-S3-PICO-1-N8R8`) 전용 경량 펌웨어입니다.
 
 ### 4. SETTINGS
 
-Display, Time, Timers, Air Mouse, Air Harp, Sound, IR Remote, Device로 나뉩니다. **Display → Theme**에서 `DARK / LIGHT`를 고릅니다. A로 이동하고 B로 열거나 값을 바꿉니다. A+B를 길게 누르면 한 단계 뒤로 돌아갑니다. 바꾼 값은 자동 저장됩니다.
+Display, Time, Timers, Air Mouse, Air Harp, Sound, IR Remote, Device로 나뉩니다. **Display → Theme**에서 `DARK / LIGHT`를 고릅니다. A로 이동하고 B로 열거나 값을 바꿉니다. A+B를 길게 누르면 A음과 B음이 이어진 뒤로가기 효과음이 나며 한 단계 뒤로 돌아갑니다. 바꾼 값은 자동 저장됩니다.
 
 ---
 
@@ -90,7 +90,7 @@ Display, Time, Timers, Air Mouse, Air Harp, Sound, IR Remote, Device로 나뉩�
 
 이 저장소는 GitHub Actions에서 **ESP-IDF v5.3.1 (`esp32s3`)**으로 자동 빌드됩니다.
 
-기존 기기에서 녹음 기능을 활성화하려면 처음 한 번 새 파티션 테이블(`0x8000`)도 앱과 함께 기록합니다. 기존 NVS와 OTA 앱 슬롯 주소는 동일합니다. 설정과 IR 슬롯을 보존하려면 보드 전체를 지우지 말고 파티션 테이블과 사용 중인 앱 슬롯만 업데이트합니다.
+기존 기기에서 녹음 기능을 활성화하려면 처음 한 번 새 파티션 테이블(`0x8000`)도 앱과 함께 기록합니다. 기존 NVS와 OTA 앱 슬롯 주소는 동일합니다. 녹음 영역에 이전 데이터가 남아 `Storage needs setup`이 표시되면, 녹음 영역의 원본을 백업한 뒤 ESP-IDF의 동일한 SPIFFS 설정으로 생성한 빈 이미지를 해당 영역에 기록해야 합니다. 설정과 IR 슬롯을 보존하려면 보드 전체를 지우지 말고 파티션 테이블과 사용 중인 앱 슬롯만 업데이트합니다.
 
 1. GitHub 저장소의 **Actions** 탭 → **Build StickS3 EMS & AirMouse Firmware** 실행 결과에서 `sticks3-ems-airmouse-<sha>` 아티팩트를 다운로드합니다.
 2. 압축 해제 후 아래 명령으로 StickS3에 플래시합니다 (`COM번호` 또는 `/dev/ttyACM0` 확인).

@@ -20,7 +20,9 @@ enum class SoundCue : uint8_t { Wake, Click, Confirm, EpiLogged };
 
 QueueHandle_t s_queue = nullptr;
 std::atomic<bool> s_stop_requested{false};
+std::atomic<bool> s_back_pending{false};
 std::atomic<unsigned> s_pending_alarms{0};
+std::atomic<bool> s_alarm_playing{false};
 std::atomic<unsigned> s_requested_harp{0};
 std::atomic<uint8_t> s_volume{0};
 std::atomic<bool> s_ir_listening{false};
@@ -33,6 +35,45 @@ constexpr int kHarpChannel = 0;
 constexpr int kCueChannel = 1;
 constexpr int kHarpFadeStepMs = 4;
 constexpr int kHarpMaxVolumeStep = 64;
+constexpr unsigned kCueRate = 16000;
+constexpr unsigned kLeadMs = 120;
+constexpr unsigned kLeadSamples = kCueRate * kLeadMs / 1000;
+constexpr unsigned kClickMs = 25;
+constexpr unsigned kConfirmMs = 55;
+constexpr unsigned kBackGapMs = 28;
+
+template<unsigned FirstMs, unsigned GapMs = 0, unsigned SecondMs = 0>
+constexpr auto cue_samples(unsigned first_hz, unsigned second_hz = 0) {
+    std::array<uint8_t, kCueRate * (kLeadMs + FirstMs + GapMs + SecondMs) / 1000> samples{};
+    for (auto &sample : samples) sample = 128;
+    constexpr int sine[] = {0, 49, 90, 117, 127, 117, 90, 49, 0, -49, -90, -117, -127, -117, -90, -49};
+    auto add = [&](unsigned offset_ms, unsigned length_ms, unsigned hz) {
+        const unsigned length = kCueRate * length_ms / 1000;
+        const unsigned offset = kCueRate * offset_ms / 1000;
+        constexpr unsigned ramp = kCueRate / 1000;
+        for (unsigned i = 0; i < length; ++i) {
+            const unsigned phase = (i * hz * std::size(sine) / kCueRate) % std::size(sine);
+            const int amount = std::min({i + 1, length - i, ramp});
+            samples[offset + i] = 128 + sine[phase] * amount / static_cast<int>(ramp);
+        }
+    };
+    add(kLeadMs, FirstMs, first_hz);
+    if (SecondMs) add(kLeadMs + FirstMs + GapMs, SecondMs, second_hz);
+    return samples;
+}
+
+constexpr auto kClick = cue_samples<kClickMs>(1400);
+constexpr auto kConfirm = cue_samples<kConfirmMs>(950);
+constexpr auto kBack = cue_samples<kClickMs, kBackGapMs, kConfirmMs>(1400, 950);
+constexpr auto kEpi = cue_samples<70, 15, 90>(1047, 1319);
+
+template<size_t Samples>
+void play_cue(const std::array<uint8_t, Samples> &wave, bool interrupt = false) {
+    // Feed silence on cold starts so the codec and amplifier are ready before
+    // the first audible sample. Queue subsequent cues behind that first one.
+    const size_t start = M5.Speaker.isRunning() && !interrupt ? kLeadSamples : 0;
+    M5.Speaker.playRaw(wave.data() + start, wave.size() - start, kCueRate, false, 1, kCueChannel, interrupt);
+}
 
 constexpr auto kHarpWave = [] {
     std::array<uint8_t, 64> wave{};
@@ -95,14 +136,14 @@ uint8_t configured_volume() {
     return g_settings.sound_muted ? 0 : std::clamp(g_settings.sound_volume, 0, 100) * 255 / 100;
 }
 
-bool interruptible_sleep_ms(uint32_t ms, bool interrupted_by_alarm = false) {
+bool interruptible_sleep_ms(uint32_t ms) {
     for (uint32_t elapsed = 0; elapsed < ms;) {
-        if (s_stop_requested.load() || (interrupted_by_alarm && s_pending_alarms.load())) return false;
+        if (s_stop_requested.load()) return false;
         const uint32_t step = std::min<uint32_t>(ms - elapsed, 10);
         vTaskDelay(pdMS_TO_TICKS(step));
         elapsed += step;
     }
-    return !s_stop_requested.load() && (!interrupted_by_alarm || !s_pending_alarms.load());
+    return !s_stop_requested.load();
 }
 
 unsigned take_alarm() {
@@ -163,7 +204,9 @@ void sound_task(void *) {
         const unsigned alarm = take_alarm();
         if (alarm != 0) {
             s_ir_ready.store(false);
+            s_alarm_playing.store(true);
             play_alarm(alarm, volume);
+            s_alarm_playing.store(false);
             continue;
         }
 
@@ -177,31 +220,34 @@ void sound_task(void *) {
         const unsigned voice = !ir_quiet && requested != 0 && volume != 0 && !ems_timer_active_alarms().any()
                              ? requested : 0;
         const bool changing_harp = s_harp.update(voice, esp_timer_get_time() / 1000);
+        if (volume == 0 || ir_quiet || !M5.Speaker.isEnabled()) {
+            s_back_pending.store(false);
+        } else if (M5.Speaker.isPlaying(kCueChannel) < 2 && s_back_pending.exchange(false)) {
+            play_cue(kBack);
+        }
         const bool check_idle_speaker = !s_harp.playing() && M5.Speaker.isRunning();
 
         SoundCue cue;
+        const bool waiting_back = s_back_pending.load();
         const TickType_t timeout = changing_harp ? pdMS_TO_TICKS(kHarpFadeStepMs) :
-                                   check_idle_speaker ? pdMS_TO_TICKS(300) : portMAX_DELAY;
+                                   waiting_back ? pdMS_TO_TICKS(10) :
+                                   check_idle_speaker ? pdMS_TO_TICKS(1200) : portMAX_DELAY;
         if (xQueueReceive(s_queue, &cue, timeout) != pdTRUE) {
             // The StickS3's external audio rail turns off with the speaker.
-            if (!changing_harp && check_idle_speaker && !M5.Speaker.isPlaying()) M5.Speaker.end();
+            if (!changing_harp && !waiting_back && check_idle_speaker && !M5.Speaker.isPlaying()) M5.Speaker.end();
             continue;
         }
         if (cue == SoundCue::Wake || s_voice_requested.load() ||
             s_ir_listening.load() || !M5.Speaker.isEnabled()) continue;
         if (volume == 0 || s_stop_requested.load() || s_pending_alarms.load()) continue;
+        // Never make the worker wait for a mixer slot while it services alarms
+        // and I2S handoffs. The dedicated Back request above waits separately.
+        if (cue != SoundCue::EpiLogged && M5.Speaker.isPlaying(kCueChannel) >= 2) continue;
 
         switch (cue) {
-            case SoundCue::Click:
-                M5.Speaker.tone(1400.0f, 25, kCueChannel);
-                break;
-            case SoundCue::Confirm:
-                M5.Speaker.tone(950.0f, 55, kCueChannel);
-                break;
-            case SoundCue::EpiLogged:
-                M5.Speaker.tone(1046.5f, 70, kCueChannel);
-                if (interruptible_sleep_ms(85, true)) M5.Speaker.tone(1318.5f, 90, kCueChannel);
-                break;
+            case SoundCue::Click: play_cue(kClick); break;
+            case SoundCue::Confirm: play_cue(kConfirm); break;
+            case SoundCue::EpiLogged: play_cue(kEpi, true); break;
             default:
                 break;
         }
@@ -238,6 +284,10 @@ void sound_fx_apply_volume() {
 }
 void sound_fx_click() { post_cue(SoundCue::Click); }
 void sound_fx_confirm() { post_cue(SoundCue::Confirm); }
+void sound_fx_back() {
+    s_back_pending.store(true);
+    wake_sound_task();
+}
 void sound_fx_epi_logged() { post_cue(SoundCue::EpiLogged); }
 
 void sound_fx_alarms(bool epi, bool preset) {
@@ -252,6 +302,7 @@ void sound_fx_stop() {
     if (!s_queue) return;
     s_stop_requested.store(true);
     s_pending_alarms.store(0);
+    s_back_pending.store(false);
     xQueueReset(s_queue);
     wake_sound_task();
 }
@@ -293,4 +344,8 @@ bool sound_fx_acquire_voice() {
 void sound_fx_release_voice() {
     s_voice_requested.store(false);
     wake_sound_task();
+}
+
+bool sound_fx_alarm_busy() {
+    return s_pending_alarms.load() || s_alarm_playing.load();
 }

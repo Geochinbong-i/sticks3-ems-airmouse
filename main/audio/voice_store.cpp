@@ -1,5 +1,6 @@
 #include "voice_store.h"
 
+#include "esp_log.h"
 #include "esp_partition.h"
 #include "esp_spiffs.h"
 
@@ -17,6 +18,7 @@ constexpr char kPath[] = "/voice";
 constexpr char kDraft[] = "/voice/draft";
 constexpr uint32_t kMagic = 0x31434956u;
 constexpr size_t kMaxBytes = kVoiceClipSec * kVoiceSampleRate;
+const char *s_error = "Store unavailable";
 
 struct FileHeader {
     uint32_t magic;
@@ -52,20 +54,33 @@ bool voice_store_init() {
     if (tried) return ready;
     tried = true;
     const auto *partition = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, kPartition);
-    if (!partition) return false;
+    if (!partition) {
+        s_error = "No voice partition";
+        return false;
+    }
 
     esp_vfs_spiffs_conf_t config{};
     config.base_path = kPath;
     config.partition_label = kPartition;
     config.max_files = 4;
-    ready = esp_vfs_spiffs_register(&config) == ESP_OK;
+    auto result = esp_vfs_spiffs_register(&config);
+    ready = result == ESP_OK;
     if (!ready && is_erased(partition)) {
         // An app-only update or a corrupt recording must never trigger a format.
         config.format_if_mount_failed = true;
-        ready = esp_vfs_spiffs_register(&config) == ESP_OK;
+        result = esp_vfs_spiffs_register(&config);
+        ready = result == ESP_OK;
     }
     if (ready) std::remove(kDraft);
+    else {
+        s_error = result == ESP_FAIL ? "Storage needs setup" : "Store unavailable";
+        ESP_LOGW("voice_store", "Failed to mount voice partition: %s", esp_err_to_name(result));
+    }
     return ready;
+}
+
+const char *voice_store_error() {
+    return s_error;
 }
 
 size_t voice_store_capacity(size_t requested) {

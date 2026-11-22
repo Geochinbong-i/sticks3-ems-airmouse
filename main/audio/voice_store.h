@@ -15,6 +15,7 @@ struct VoiceClip {
 };
 
 bool voice_store_init();
+const char *voice_store_error();
 size_t voice_store_capacity(size_t requested);
 bool voice_store_save(const char *path, const uint8_t *pcm, size_t samples, int64_t utc);
 bool voice_store_info(const char *path, VoiceClip &clip);

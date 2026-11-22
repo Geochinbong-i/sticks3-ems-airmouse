@@ -213,7 +213,7 @@ void imu_abs_cal_ui_run() {
     while (true) {
         input_update();
         if (input_ab_held(500)) {
-            sound_fx_click();
+            sound_fx_back();
             input_wait_ab_release();
             canvas.deleteSprite();
             return;

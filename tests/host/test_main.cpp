@@ -388,6 +388,24 @@ static void test_harp_range_and_arpeggio() {
     assert(arp.play(1700, 10, AirHarpScale::Major, range) == 29);
     arp.stop();
     assert(arp.play(4000, 11, AirHarpScale::Pentatonic, range) == 35);
+
+    AirHarpArpeggio rise(AirHarpPattern::Rise);
+    assert(rise.play(0, 0, AirHarpScale::Major, range) == 24);
+    assert(rise.play(180, 0, AirHarpScale::Major, range) == 26);
+    assert(rise.play(360, 0, AirHarpScale::Minor, range) == 27);
+    assert(rise.play(1440, 0, AirHarpScale::Major, range) == 24);
+
+    AirHarpArpeggio waltz(AirHarpPattern::Waltz);
+    assert(waltz.play(0, 0, AirHarpScale::Major, range) == 24);
+    assert(waltz.play(359, 1, AirHarpScale::Major, range) == 24);
+    assert(waltz.play(360, 1, AirHarpScale::Major, range) == 32);
+    assert(waltz.play(720, 1, AirHarpScale::Minor, range) == 27);
+
+    AirHarpArpeggio wave(AirHarpPattern::Wave);
+    assert(wave.play(0, 0, AirHarpScale::Pentatonic, range) == 24);
+    assert(wave.play(400, 0, AirHarpScale::Pentatonic, range) == 33);
+    assert(wave.play(799, 0, AirHarpScale::Minor, range) == 33);
+    assert(wave.play(800, 0, AirHarpScale::Minor, range) == 29);
 }
 
 static void test_ems_simultaneous_alarms() {

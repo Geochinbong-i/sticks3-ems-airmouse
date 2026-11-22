@@ -13,6 +13,10 @@ constexpr char kTag[] = "ir_remote";
 constexpr gpio_num_t kReceivePin = GPIO_NUM_42;
 constexpr gpio_num_t kSendPin = GPIO_NUM_46;
 constexpr unsigned kResolutionHz = 1000000 / kIrTickUs;
+// The Stick S3 crystal is 40 MHz. The APB clock would need a divider of
+// 320 at this resolution, exceeding the S3 RMT limit of 256.
+constexpr unsigned kXtalHz = 40000000;
+static_assert(kXtalHz % kResolutionHz == 0 && kXtalHz / kResolutionHz <= 256);
 constexpr int64_t kHighPowerSpacingUs = 500000;
 int64_t s_next_high_power_us = 0;
 
@@ -56,7 +60,7 @@ bool IrDevice::open() {
 
     rmt_rx_channel_config_t rx_config{};
     rx_config.gpio_num = kReceivePin;
-    rx_config.clk_src = RMT_CLK_SRC_DEFAULT;
+    rx_config.clk_src = RMT_CLK_SRC_XTAL;
     rx_config.mem_block_symbols = 96;
     rx_config.resolution_hz = kResolutionHz;
     rx_config.flags.invert_in = true; // The receiver pulls low when the IR carrier is present.
@@ -67,7 +71,7 @@ bool IrDevice::open() {
 
     rmt_tx_channel_config_t tx_config{};
     tx_config.gpio_num = kSendPin;
-    tx_config.clk_src = RMT_CLK_SRC_DEFAULT;
+    tx_config.clk_src = RMT_CLK_SRC_XTAL;
     tx_config.mem_block_symbols = 96;
     tx_config.resolution_hz = kResolutionHz;
     tx_config.trans_queue_depth = 1;
@@ -80,9 +84,6 @@ bool IrDevice::open() {
     if (!apply_carrier(tx_, carrier_khz_, false)) return false;
     rmt_copy_encoder_config_t copy{};
     if (!check(rmt_new_copy_encoder(&copy, &encoder_), "TX encoder")) return false;
-    tx_enabled_ = check(rmt_enable(tx_), "TX enable");
-    if (!tx_enabled_) return false;
-
     restore_power_ = !M5.Power.getExtOutput();
     if (restore_power_) {
         M5.Power.setExtOutput(true);
@@ -142,7 +143,7 @@ void IrDevice::cancel_receive() {
 }
 
 bool IrDevice::send(const IrSignal &signal, const IrProfile &profile) {
-    if (!tx_enabled_ || !ir_build_tx(signal, profile, s_tx_signal)) return false;
+    if (!tx_ || !encoder_ || tx_enabled_ || !ir_build_tx(signal, profile, s_tx_signal)) return false;
     cancel_receive();
     xQueueReset(events_);
 
@@ -167,14 +168,22 @@ bool IrDevice::send(const IrSignal &signal, const IrProfile &profile) {
         s_tx_symbols[i] = symbol;
     }
 
+    if (!check(rmt_enable(tx_), "TX enable")) return false;
+    tx_enabled_ = true;
     rmt_transmit_config_t config{};
     if (!check(rmt_transmit(tx_, encoder_, s_tx_symbols.data(),
-                            count * sizeof(rmt_symbol_word_t), &config), "TX start")) return false;
+                            count * sizeof(rmt_symbol_word_t), &config), "TX start")) {
+        if (check(rmt_disable(tx_), "TX disable")) tx_enabled_ = false;
+        return false;
+    }
     if (high) s_next_high_power_us = now_us + kHighPowerSpacingUs;
     return true;
 }
 
 bool IrDevice::sending_done() {
     size_t event;
-    return xQueueReceive(events_, &event, 0) == pdTRUE;
+    if (xQueueReceive(events_, &event, 0) != pdTRUE) return false;
+    // XTAL-clocked RMT holds a CPU-frequency lock while enabled.
+    if (check(rmt_disable(tx_), "TX disable")) tx_enabled_ = false;
+    return true;
 }

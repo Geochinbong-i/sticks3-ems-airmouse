@@ -62,7 +62,8 @@ int ui_choose_menu(const char *title, const MenuRow *rows, int count) {
         const auto now = input_now_ms();
         const auto action = buttons.update(input_a_down(), input_b_down(), now, false);
         if (action == MenuAction::Select || action == MenuAction::Back) {
-            sound_fx_click();
+            if (action == MenuAction::Back) sound_fx_back();
+            else sound_fx_confirm();
             input_wait_all_release();
             return action == MenuAction::Select ? cursor.selected : -1;
         }

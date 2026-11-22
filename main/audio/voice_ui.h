@@ -2,7 +2,9 @@
 
 #include <cstdint>
 
-enum class VoiceResult { Saved, SavedForAlarm, NoSpace, Unavailable, Failed };
+enum class VoiceResult {
+    Saved, SavedForAlarm, NoSpace, Storage, Alarm, AudioBusy, Mic, NoSamples, Failed,
+};
 
 void voice_recorder_ui_run();
 VoiceResult voice_record_memo(uint32_t generation, unsigned slot, const char *stamp);

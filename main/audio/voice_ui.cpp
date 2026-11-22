@@ -21,6 +21,9 @@
 namespace {
 constexpr int kPlaybackChannel = 2;
 constexpr size_t kSamplesPerRequest = kVoiceSampleRate / 10;
+constexpr int kPlaybackLeadMs = 120;
+constexpr size_t kPlaybackLeadSamples = kVoiceSampleRate * kPlaybackLeadMs / 1000;
+constexpr size_t kPlaybackTailSamples = kVoiceSampleRate / 10;
 using Samples = std::unique_ptr<uint8_t, decltype(&std::free)>;
 
 Samples allocate(size_t bytes) {
@@ -82,7 +85,11 @@ const char *result_message(VoiceResult result) {
         case VoiceResult::Saved: return "Recording saved";
         case VoiceResult::SavedForAlarm: return "Saved for EMS alert";
         case VoiceResult::NoSpace: return "Storage is full";
-        case VoiceResult::Unavailable: return "Mic unavailable";
+        case VoiceResult::Storage: return voice_store_error();
+        case VoiceResult::Alarm: return "EMS alarm active";
+        case VoiceResult::AudioBusy: return "Audio busy";
+        case VoiceResult::Mic: return "Mic unavailable";
+        case VoiceResult::NoSamples: return "No audio captured";
         case VoiceResult::Failed: return "Save failed";
     }
     return "";
@@ -95,7 +102,10 @@ void notice(const char *title, const char *line1, const char *line2 = nullptr) {
     bool redraw = true;
     for (;;) {
         input_update();
-        if (input_b_pressed() || input_ab_held(500)) break;
+        if (input_b_pressed() || input_ab_held(500)) {
+            sound_fx_back();
+            break;
+        }
         if (!ui_screen_is_on()) redraw = true;
         if (redraw && ui_screen_is_on()) {
             const auto &theme = ui_theme();
@@ -112,32 +122,38 @@ void notice(const char *title, const char *line1, const char *line2 = nullptr) {
 }
 
 VoiceResult record(const char *path, const char *title, const char *label, unsigned max_sec) {
-    if (!voice_store_init()) return VoiceResult::Failed;
+    if (!voice_store_init()) return VoiceResult::Storage;
     const size_t limit = voice_store_capacity(max_sec * kVoiceSampleRate) / kVoiceSampleRate * kVoiceSampleRate;
     if (!limit) return VoiceResult::NoSpace;
-    if (!M5.Mic.isEnabled() || ems_timer_active_alarms().any()) return VoiceResult::Unavailable;
+    if (!M5.Mic.isEnabled()) return VoiceResult::Mic;
+    if (sound_fx_alarm_busy()) return VoiceResult::Alarm;
 
     auto pcm = allocate(limit);
     M5Canvas canvas(&M5.Display);
-    if (!pcm || !canvas.createSprite(M5.Display.width(), M5.Display.height()) ||
-        !sound_fx_acquire_voice()) return VoiceResult::Unavailable;
+    if (!pcm || !canvas.createSprite(M5.Display.width(), M5.Display.height())) return VoiceResult::Failed;
+    const unsigned alarm_sequence = ems_timer_alarm_sequence();
+    if (!sound_fx_acquire_voice()) return VoiceResult::AudioBusy;
+    if (sound_fx_alarm_busy() || ems_timer_alarm_sequence() != alarm_sequence) {
+        sound_fx_release_voice();
+        return VoiceResult::Alarm;
+    }
     auto mic_config = M5.Mic.config();
     mic_config.sample_rate = kVoiceSampleRate;
     M5.Mic.config(mic_config);
     if (!M5.Mic.begin()) {
         M5.Mic.end();
         sound_fx_release_voice();
-        return VoiceResult::Unavailable;
+        return VoiceResult::Mic;
     }
 
     const int64_t started = input_now_ms();
     const int64_t utc = time_sync_is_valid() ? std::time(nullptr) : 0;
-    const unsigned alarm_sequence = ems_timer_alarm_sequence();
     const int64_t deadline = started + limit * 1000 / kVoiceSampleRate + 200;
     const size_t max_requests = (limit + kSamplesPerRequest - 1) / kSamplesPerRequest;
     size_t submitted = 0, samples = 0;
     bool stop_armed = !input_a_down();
     bool alarm = false;
+    bool back = false;
     int64_t next_draw = 0;
 
     while (true) {
@@ -147,9 +163,10 @@ VoiceResult record(const char *path, const char *title, const char *label, unsig
         const size_t pending = M5.Mic.isRecording();
         const size_t done = submitted - std::min(pending, submitted);
         samples = std::min(limit, done * kSamplesPerRequest);
-        alarm = ems_timer_alarm_sequence() != alarm_sequence || ems_timer_active_alarms().any();
+        alarm = ems_timer_alarm_sequence() != alarm_sequence || sound_fx_alarm_busy();
+        back = input_ab_held(500);
         if (alarm || now >= deadline || samples == limit ||
-            (stop_armed && input_a_pressed()) || input_ab_held(500)) break;
+            (stop_armed && input_a_pressed()) || back) break;
         if (!input_a_down()) stop_armed = true;
 
         if (pending < 2 && submitted < max_requests) {
@@ -169,7 +186,9 @@ VoiceResult record(const char *path, const char *title, const char *label, unsig
     // Return I2S immediately so an EMS alarm isn't held up by a flash write.
     sound_fx_release_voice();
     const bool saved = samples && voice_store_save(path, pcm.get(), samples, utc);
+    if (back) sound_fx_back();
     input_wait_all_release();
+    if (!samples) return alarm ? VoiceResult::Alarm : VoiceResult::NoSamples;
     return saved ? (alarm ? VoiceResult::SavedForAlarm : VoiceResult::Saved) : VoiceResult::Failed;
 }
 
@@ -183,19 +202,29 @@ void play(const char *path, const char *title, const char *label) {
         notice(title, "No voice memo");
         return;
     }
-    auto pcm = allocate(clip.samples);
+    const size_t padded_samples = clip.samples + kPlaybackLeadSamples + kPlaybackTailSamples;
+    auto pcm = allocate(padded_samples);
     M5Canvas canvas(&M5.Display);
-    if (!pcm || !voice_store_load(path, pcm.get(), clip.samples) ||
+    if (!pcm || !voice_store_load(path, pcm.get() + kPlaybackLeadSamples, clip.samples) ||
         !canvas.createSprite(M5.Display.width(), M5.Display.height())) {
         notice(title, "Playback failed");
         return;
     }
+    std::fill_n(pcm.get(), kPlaybackLeadSamples, 128);
+    // The mixer releases the last block before I2S finishes transmitting it.
+    std::fill_n(pcm.get() + kPlaybackLeadSamples + clip.samples, kPlaybackTailSamples, 128);
     input_wait_all_release();
-    if (ems_timer_active_alarms().any() || !sound_fx_acquire_voice()) {
+    const auto alarm_sequence = ems_timer_alarm_sequence();
+    if (sound_fx_alarm_busy() || !sound_fx_acquire_voice()) {
         notice(title, "Playback unavailable", "Check EMS alerts");
         return;
     }
-    if (!M5.Speaker.playRaw(pcm.get(), clip.samples, kVoiceSampleRate, false, 1, kPlaybackChannel)) {
+    if (sound_fx_alarm_busy() || alarm_sequence != ems_timer_alarm_sequence()) {
+        sound_fx_release_voice();
+        notice(title, "EMS alarm active");
+        return;
+    }
+    if (!M5.Speaker.playRaw(pcm.get(), padded_samples, kVoiceSampleRate, false, 1, kPlaybackChannel)) {
         M5.Speaker.end();
         sound_fx_release_voice();
         notice(title, "Playback failed");
@@ -203,16 +232,16 @@ void play(const char *path, const char *title, const char *label) {
     }
 
     const int64_t started = input_now_ms();
-    const auto alarm_sequence = ems_timer_alarm_sequence();
     int64_t next_draw = 0;
+    bool back = false;
     while (M5.Speaker.isPlaying(kPlaybackChannel)) {
         input_update();
         const int64_t now = input_now_ms();
         ui_note_activity(now);
-        if (input_b_pressed() || input_ab_held(500) || alarm_sequence != ems_timer_alarm_sequence() ||
-            ems_timer_active_alarms().any()) break;
+        back = input_b_pressed() || input_ab_held(500);
+        if (back || alarm_sequence != ems_timer_alarm_sequence() || sound_fx_alarm_busy()) break;
         if (now >= next_draw) {
-            size_t elapsed = (now - started) * kVoiceSampleRate / 1000;
+            size_t elapsed = std::max<int64_t>(0, now - started - kPlaybackLeadMs) * kVoiceSampleRate / 1000;
             activity(canvas, title, label, std::min(elapsed, (size_t)clip.samples), clip.samples, false);
             next_draw = now + 100;
         }
@@ -221,6 +250,7 @@ void play(const char *path, const char *title, const char *label) {
     M5.Speaker.stop(kPlaybackChannel);
     M5.Speaker.end();
     sound_fx_release_voice();
+    if (back) sound_fx_back();
     input_wait_all_release();
 }
 
@@ -259,6 +289,7 @@ bool confirm_delete(M5Canvas &canvas, uint32_t id) {
     while (true) {
         input_update();
         if (input_a_pressed() || input_ab_held(500)) {
+            sound_fx_back();
             input_wait_all_release();
             return false;
         }
@@ -321,13 +352,14 @@ void voice_recorder_ui_run() {
     size_t selected = 0;
     int action = 0;
     Page page = Page::Ready;
-    const char *status = healthy ? nullptr : "Store unavailable";
+    const char *status = healthy ? nullptr : voice_store_error();
     int64_t next_draw = 0;
     input_wait_all_release();
 
     for (;;) {
         input_update();
         if (input_ab_held(500)) {
+            sound_fx_back();
             input_wait_all_release();
             if (page == Page::Ready) break;
             page = page == Page::Clip ? Page::List : Page::Ready;
@@ -336,7 +368,7 @@ void voice_recorder_ui_run() {
             if (page == Page::Ready && healthy) {
                 if (count == kVoiceClipCount || voice_store_capacity(kVoiceSampleRate) < kVoiceSampleRate) {
                     status = "Storage is full";
-                } else if (ems_timer_active_alarms().any()) {
+                } else if (sound_fx_alarm_busy()) {
                     status = "EMS alert active";
                 } else {
                     const uint32_t id = count ? clips[0].id + 1u : 1u;
@@ -362,7 +394,8 @@ void voice_recorder_ui_run() {
             } else if (page == Page::List) {
                 page = selected == count ? Page::Ready : Page::Clip;
                 action = 0;
-                sound_fx_click();
+                if (page == Page::Ready) sound_fx_back();
+                else sound_fx_confirm();
             } else {
                 char path[32];
                 voice_clip_path(path, clips[selected].id);
@@ -370,6 +403,7 @@ void voice_recorder_ui_run() {
                     play(path, "RECORDER", "Voice recording");
                 } else if (action == 2) {
                     page = Page::List;
+                    sound_fx_back();
                 } else if (confirm_delete(canvas, clips[selected].id)) {
                     if (voice_store_delete(path)) {
                         count = voice_store_list(clips);

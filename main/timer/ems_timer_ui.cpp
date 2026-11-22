@@ -116,7 +116,7 @@ static bool confirm_reset_modal(M5Canvas &canvas) {
     while (true) {
         input_update();
         if (input_ab_held(500) || input_a_pressed()) {
-            sound_fx_click();
+            sound_fx_back();
             input_wait_all_release();
             return false;
         }
@@ -263,7 +263,7 @@ static void show_logs_modal(M5Canvas &canvas) {
     while (true) {
         input_update();
         if (input_ab_held(400) || input_b_pressed()) {
-            sound_fx_click();
+            sound_fx_back();
             input_wait_all_release();
             return;
         }
@@ -538,7 +538,7 @@ void ems_timer_ui_run() {
         int64_t now_ms = input_now_ms();
 
         if (input_ab_held(600)) {
-            sound_fx_click();
+            sound_fx_back();
             input_wait_ab_release();
             canvas.deleteSprite();
             return;

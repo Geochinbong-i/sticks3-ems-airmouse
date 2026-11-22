@@ -117,7 +117,10 @@ void choose_harp_octaves() {
     bool redraw = true;
     for (;;) {
         input_update();
-        if (input_ab_held(500) || (input_b_pressed() && selected == count)) break;
+        if (input_ab_held(500) || (input_b_pressed() && selected == count)) {
+            sound_fx_back();
+            break;
+        }
         if (input_b_pressed()) {
             g_settings.harp_octaves = selected;
             sound_fx_confirm();
@@ -277,7 +280,7 @@ void settings_ui_run() {
         const bool hold_back = input_ab_held(500);
         const bool open = input_b_pressed();
         if (hold_back || (open && selected == back)) {
-            sound_fx_click();
+            sound_fx_back();
             input_wait_all_release();
             if (!group) break;
             group = nullptr;

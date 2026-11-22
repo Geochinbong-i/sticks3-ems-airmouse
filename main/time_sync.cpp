@@ -709,7 +709,7 @@ void time_sync_ui_run() {
 
         if (input_ab_held(500)) {
             stop_active_transports();
-            sound_fx_click();
+            sound_fx_back();
             input_wait_ab_release();
             canvas.deleteSprite();
             return;

@@ -138,13 +138,34 @@ bool AirHarpCore::sample_gyro(float gx, float gy, float gz, bool flip_180, int64
 }
 
 uint8_t AirHarpArpeggio::play(int64_t now_ms, unsigned key, AirHarpScale scale, AirHarpNoteRange range) {
-    constexpr int kBeatStepMs = 250;
-    constexpr int patterns[][4] = {{0, 3, 7, 3}, {0, 4, 7, 4}, {0, 2, 7, 9}};
+    struct Pattern {
+        int unit_ms;
+        int length;
+        int cycle_units;
+        int degree[8];
+        int units[8];
+    };
+    static constexpr Pattern patterns[] = {
+        {250, 4, 4,  {0, 2, 4, 2},             {1, 1, 1, 1}},
+        {180, 8, 8,  {0, 1, 2, 3, 4, 3, 2, 1}, {1, 1, 1, 1, 1, 1, 1, 1}},
+        {180, 6, 8,  {0, 4, 2, 1, 3, 2},       {2, 1, 1, 2, 1, 1}},
+        {200, 8, 10, {0, 2, 4, 3, 2, 4, 1, 2}, {1, 1, 2, 1, 1, 1, 2, 1}},
+    };
+    static constexpr int scales[][5] = {{0, 2, 3, 5, 7}, {0, 2, 4, 5, 7}, {0, 2, 4, 7, 9}};
+    static constexpr int classic_pentatonic[] = {0, 2, 7, 9};
+    const auto &pattern = patterns[static_cast<unsigned>(pattern_)];
     if (step_ < 0) started_ms_ = now_ms;
-    const int64_t next = (now_ms - started_ms_) / kBeatStepMs;
+    const int64_t units = (now_ms - started_ms_) / pattern.unit_ms;
+    int within = units % pattern.cycle_units;
+    int index = 0;
+    while (index + 1 < pattern.length && within >= pattern.units[index]) {
+        within -= pattern.units[index++];
+    }
+    const int64_t next = (units / pattern.cycle_units) * pattern.length + index;
     if (next != step_) {
         step_ = next;
-        const int interval = patterns[static_cast<unsigned>(scale)][step_ % 4];
+        const int interval = pattern_ == AirHarpPattern::Classic && scale == AirHarpScale::Pentatonic
+            ? classic_pentatonic[index] : scales[static_cast<unsigned>(scale)][pattern.degree[index]];
         note_ = range.first + (key % 12 + interval) % range.count;
     }
     return note_;

@@ -255,10 +255,10 @@ void ir_ui_run() {
 
         const auto press = buttons.update(input_a_down(), input_b_down(), now, false);
         if (press == MenuAction::Back && !sending) {
-            sound_fx_click();
+            if (page == Page::Listening) stop_rx();
+            sound_fx_back();
             if (page == Page::Slots) break;
             if (page == Page::Listening) {
-                stop_rx();
                 show(Page::Learn);
             } else if (page == Page::Timeout) {
                 show(Page::Learn);
